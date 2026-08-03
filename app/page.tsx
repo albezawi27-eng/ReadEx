@@ -221,7 +221,7 @@ function HomeContent() {
   };
 
   return (
-    <main className={`w-full h-screen ${themeClasses.bg}`}>
+    <main className={`w-full h-[100dvh] flex flex-col overflow-hidden ${themeClasses.bg}`}>
       {view === 'library' ? (
         <Library
           onOpenBook={handleOpenSavedBook}
@@ -231,7 +231,7 @@ function HomeContent() {
           refreshKey={refreshKey}
         />
       ) : (
-        <div className="flex flex-col md:flex-row w-full h-screen">
+        <div className="flex flex-col md:flex-row w-full h-full overflow-hidden">
           <Sidebar
             sections={allSections}
             activeSection={activeSectionId}
@@ -253,12 +253,3 @@ function HomeContent() {
       )}
     </main>
   );
-}
-
-export default function Home() {
-  return (
-    <ThemeProvider>
-      <HomeContent />
-    </ThemeProvider>
-  );
-}
