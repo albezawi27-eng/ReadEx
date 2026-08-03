@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ThemeProvider, useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import Sidebar from '@/app/components/Sidebar';
 import ContentPanel from '@/app/components/ContentPanel';
@@ -44,7 +44,11 @@ function HomeContent() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
 
   const noteSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-
+  useEffect(() => {
+    if (navigator.storage?.persist) {
+      navigator.storage.persist();
+    }
+  }, []);
   const currentSection = allSections.find((s) => s.id === activeSectionId) || null;
 
   const activateBook = (
