@@ -53,6 +53,10 @@ function HomeContent() {
   }, []);
 
   const currentSection = allSections.find((s) => s.id === activeSectionId) || null;
+  const activeIndex = allSections.findIndex((s) => s.id === activeSectionId);
+  const prevSection = activeIndex > 0 ? allSections[activeIndex - 1] : null;
+  const nextSection =
+    activeIndex >= 0 && activeIndex < allSections.length - 1 ? allSections[activeIndex + 1] : null;
 
   const activateBook = (
     sections: PDFSection[],
@@ -87,7 +91,7 @@ function HomeContent() {
     setNotes(notesMap);
     setHighlightedLines(new Set());
     setPdfFile(file);
-    setMobileShowSidebar(true); // always start on the section list on phone
+    setMobileShowSidebar(true);
   };
 
   const registerNewBook = async (sections: PDFSection[], file: File) => {
@@ -172,7 +176,7 @@ function HomeContent() {
   const handleSectionSelect = (id: string) => {
     setActiveSectionId(id);
     setHighlightedLines(new Set());
-    setMobileShowSidebar(false); // switch to reading view on phone
+    setMobileShowSidebar(false);
     if (activeBookId) {
       saveProgress({
         bookId: activeBookId,
@@ -180,6 +184,13 @@ function HomeContent() {
         totalSections: allSections.length,
         lastReadSectionKey: id,
       });
+    }
+  };
+
+  const handleNavigateSection = (direction: 'prev' | 'next') => {
+    const target = direction === 'prev' ? prevSection : nextSection;
+    if (target) {
+      handleSectionSelect(target.id);
     }
   };
 
@@ -260,6 +271,9 @@ function HomeContent() {
             onNoteChange={(text) => activeSectionId && handleNoteChange(activeSectionId, text)}
             showOnMobile={!mobileShowSidebar}
             onShowSidebar={handleShowSidebarMobile}
+            onNavigateSection={handleNavigateSection}
+            prevSectionTitle={prevSection?.title ?? null}
+            nextSectionTitle={nextSection?.title ?? null}
           />
         </div>
       )}

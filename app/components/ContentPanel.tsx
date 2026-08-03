@@ -20,15 +20,14 @@ interface ContentPanelProps {
   onNoteChange: (text: string) => void;
   showOnMobile: boolean;
   onShowSidebar: () => void;
+  onNavigateSection: (direction: 'prev' | 'next') => void;
+  prevSectionTitle: string | null;
+  nextSectionTitle: string | null;
 }
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.1;
-
-// Max display size relative to native PDF point size on desktop (1.0 = 612px
-// for Letter). On narrow screens this gets capped down further so the page
-// always fits its container instead of being clipped.
 const PAGE_DISPLAY_SCALE = 1.4;
 
 function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop; theme: string }) {
@@ -52,9 +51,6 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
     const { viewportWidth, viewportHeight, scale, yTop, yBottom } = dims;
     const nativeCssWidth = viewportWidth / scale;
 
-    // Fit to whatever space is actually available (phone screen, narrow
-    // window) instead of always assuming desktop width -- this is what
-    // stops the page being clipped on mobile.
     const availableWidth = wrapper.parentElement?.clientWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
     const effectiveScale = Math.min(PAGE_DISPLAY_SCALE, availableWidth / nativeCssWidth);
 
@@ -141,8 +137,6 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
 
     renderPage();
 
-    // Recompute display size on resize/orientation change without re-fetching
-    // or re-rendering the underlying PDF page.
     let resizeTimer: ReturnType<typeof setTimeout>;
     const handleResize = () => {
       clearTimeout(resizeTimer);
@@ -199,6 +193,9 @@ export default function ContentPanel({
   onNoteChange,
   showOnMobile,
   onShowSidebar,
+  onNavigateSection,
+  prevSectionTitle,
+  nextSectionTitle,
 }: ContentPanelProps) {
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
@@ -208,7 +205,6 @@ export default function ContentPanel({
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
-
       const insideContent = !!contentAreaRef.current?.contains(e.target as Node);
       e.preventDefault();
       if (!insideContent) return;
@@ -222,6 +218,28 @@ export default function ContentPanel({
     document.addEventListener('wheel', handleWheel, { passive: false });
     return () => document.removeEventListener('wheel', handleWheel);
   }, []);
+
+  // Left/Right arrow keys move between sections -- ignored while typing
+  // (Notes textarea, or any input), so it never interferes with typing.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement ||
+        target?.isContentEditable;
+      if (isTyping) return;
+
+      if (e.key === 'ArrowLeft') {
+        onNavigateSection('prev');
+      } else if (e.key === 'ArrowRight') {
+        onNavigateSection('next');
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onNavigateSection]);
 
   const adjustZoom = (delta: number) => {
     setZoomLevel((prev) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
@@ -242,6 +260,8 @@ export default function ContentPanel({
 
   const isCanvasMode = !!(pdfFile && activeSection.crops && activeSection.crops.length > 0);
   const lines = activeSection.content.split('\n').filter((line) => line.trim());
+  const hasPrev = !!prevSectionTitle;
+  const hasNext = !!nextSectionTitle;
 
   return (
     <div className={`flex-1 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} flex-col overflow-hidden relative`}>
@@ -308,9 +328,39 @@ export default function ContentPanel({
         )}
       </div>
 
-      {/* Floating zoom control */}
+      {/* Section Navigation */}
       <div
-        className={`absolute bottom-4 right-4 md:bottom-6 md:right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm`}
+        className={`px-4 py-2.5 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 shrink-0 flex items-center gap-2`}
+      >
+        <button
+          onClick={() => onNavigateSection('prev')}
+          disabled={!hasPrev}
+          className={`flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition min-w-0 ${
+            hasPrev
+              ? `${themeClasses.hover} border ${themeClasses.border} border-opacity-30`
+              : 'opacity-30 cursor-not-allowed'
+          }`}
+        >
+          <span className="shrink-0">←</span>
+          <span className="truncate">{prevSectionTitle || 'Previous'}</span>
+        </button>
+        <button
+          onClick={() => onNavigateSection('next')}
+          disabled={!hasNext}
+          className={`flex-1 flex items-center justify-end gap-2 px-3 py-2 rounded-lg text-sm font-medium transition min-w-0 ${
+            hasNext
+              ? `${themeClasses.hover} border ${themeClasses.border} border-opacity-30`
+              : 'opacity-30 cursor-not-allowed'
+          }`}
+        >
+          <span className="truncate">{nextSectionTitle || 'Next'}</span>
+          <span className="shrink-0">→</span>
+        </button>
+      </div>
+
+      {/* Floating zoom control -- raised to clear the new nav row above */}
+      <div
+        className={`absolute bottom-20 right-4 md:bottom-24 md:right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm`}
       >
         <button
           onClick={() => adjustZoom(-ZOOM_STEP)}
@@ -336,7 +386,7 @@ export default function ContentPanel({
       </div>
 
       {/* Footer Stats */}
-      <div className={`px-4 py-3 md:px-8 md:py-4 border-t ${themeClasses.border} border-opacity-20 text-sm opacity-60 shrink-0`}>
+      <div className={`px-4 py-2 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 text-xs md:text-sm opacity-60 shrink-0`}>
         {isCanvasMode ? (
           <span>Spans {activeSection.crops!.length} page(s)</span>
         ) : (
