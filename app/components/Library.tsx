@@ -98,8 +98,8 @@ export default function Library({
   return (
     <div className={`w-full h-screen ${themeClasses.bg} ${themeClasses.text} flex flex-col overflow-y-auto`}>
       <div className="max-w-4xl w-full mx-auto px-8 py-12">
-        <div className="flex justify-between items-center mb-10">
-          <h1 className="text-4xl font-bold">My Library</h1>
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-10">
+       <h1 className="text-3xl sm:text-4xl font-bold">My Library</h1>
           <label
             className={`px-5 py-3 rounded-lg font-medium cursor-pointer transition ${themeClasses.button} ${
               isProcessing ? 'opacity-60 pointer-events-none' : ''

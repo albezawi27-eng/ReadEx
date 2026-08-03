@@ -18,21 +18,64 @@ interface ContentPanelProps {
   pdfFile?: File | null;
   noteValue: string;
   onNoteChange: (text: string) => void;
+  showOnMobile: boolean;
+  onShowSidebar: () => void;
 }
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.1;
 
-// Displayed page size relative to native PDF point size (1.0 = 612px for
-// Letter). Raster is captured at scale=2.0, so 1.4x display still
-// oversamples ~1.4x -- stays sharp, just fills more of the panel.
+// Max display size relative to native PDF point size on desktop (1.0 = 612px
+// for Letter). On narrow screens this gets capped down further so the page
+// always fits its container instead of being clipped.
 const PAGE_DISPLAY_SCALE = 1.4;
 
 function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop; theme: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [isRendering, setIsRendering] = useState(false);
+  const rawDimsRef = useRef<{
+    viewportWidth: number;
+    viewportHeight: number;
+    scale: number;
+    yTop: number;
+    yBottom: number;
+  } | null>(null);
+
+  const applySizing = () => {
+    const canvas = canvasRef.current;
+    const wrapper = wrapperRef.current;
+    const dims = rawDimsRef.current;
+    if (!canvas || !wrapper || !dims) return;
+
+    const { viewportWidth, viewportHeight, scale, yTop, yBottom } = dims;
+    const nativeCssWidth = viewportWidth / scale;
+
+    // Fit to whatever space is actually available (phone screen, narrow
+    // window) instead of always assuming desktop width -- this is what
+    // stops the page being clipped on mobile.
+    const availableWidth = wrapper.parentElement?.clientWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
+    const effectiveScale = Math.min(PAGE_DISPLAY_SCALE, availableWidth / nativeCssWidth);
+
+    const cssTop = (yTop / scale) * effectiveScale;
+    const cssHeight = ((yBottom - yTop) / scale) * effectiveScale;
+    const cssWidth = nativeCssWidth * effectiveScale;
+    const cssFullHeight = (viewportHeight / scale) * effectiveScale;
+
+    wrapper.style.height = `${cssHeight}px`;
+    wrapper.style.width = `${cssWidth}px`;
+    wrapper.style.maxWidth = '100%';
+    wrapper.style.overflow = 'hidden';
+    wrapper.style.position = 'relative';
+
+    canvas.style.width = `${cssWidth}px`;
+    canvas.style.height = `${cssFullHeight}px`;
+    canvas.style.position = 'absolute';
+    canvas.style.top = `-${cssTop}px`;
+    canvas.style.left = '50%';
+    canvas.style.transform = 'translateX(-50%)';
+  };
 
   useEffect(() => {
     let isCancelled = false;
@@ -58,7 +101,6 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
         if (isCancelled) return;
 
         const canvas = canvasRef.current;
-        const wrapper = wrapperRef.current;
         const context = canvas.getContext('2d');
         if (!context) return;
 
@@ -70,31 +112,19 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
 
         const [, y1] = viewport.convertToViewportPoint(0, crop.pdfStartY);
         const [, y2] = viewport.convertToViewportPoint(0, crop.pdfEndY);
-
         const yTop = Math.max(0, y1 - 40);
         const yBottom = Math.min(viewport.height, y2 + 40);
 
-        const cssTop = (yTop / scale) * PAGE_DISPLAY_SCALE;
-        const cssHeight = ((yBottom - yTop) / scale) * PAGE_DISPLAY_SCALE;
-        const cssWidth = (viewport.width / scale) * PAGE_DISPLAY_SCALE;
-
-        wrapper.style.height = `${cssHeight}px`;
-        wrapper.style.width = `${cssWidth}px`;
-        wrapper.style.maxWidth = '100%';
-        wrapper.style.overflow = 'hidden';
-        wrapper.style.position = 'relative';
-
-        canvas.style.width = `${cssWidth}px`;
-        canvas.style.height = `${(viewport.height / scale) * PAGE_DISPLAY_SCALE}px`;
-        canvas.style.position = 'absolute';
-        canvas.style.top = `-${cssTop}px`;
-        canvas.style.left = '50%';
-        canvas.style.transform = 'translateX(-50%)';
-
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
+        rawDimsRef.current = {
+          viewportWidth: viewport.width,
+          viewportHeight: viewport.height,
+          scale,
+          yTop,
+          yBottom,
         };
+        applySizing();
+
+        const renderContext = { canvasContext: context, viewport };
 
         if (!isCancelled) {
           renderTask = page.render(renderContext);
@@ -110,8 +140,20 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
     };
 
     renderPage();
+
+    // Recompute display size on resize/orientation change without re-fetching
+    // or re-rendering the underlying PDF page.
+    let resizeTimer: ReturnType<typeof setTimeout>;
+    const handleResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(applySizing, 150);
+    };
+    window.addEventListener('resize', handleResize);
+
     return () => {
       isCancelled = true;
+      clearTimeout(resizeTimer);
+      window.removeEventListener('resize', handleResize);
       if (renderTask) {
         try {
           renderTask.cancel();
@@ -155,6 +197,8 @@ export default function ContentPanel({
   pdfFile,
   noteValue,
   onNoteChange,
+  showOnMobile,
+  onShowSidebar,
 }: ContentPanelProps) {
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
@@ -183,9 +227,11 @@ export default function ContentPanel({
     setZoomLevel((prev) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
   };
 
+  const rootVisibilityClass = `${showOnMobile ? 'flex' : 'hidden'} md:flex`;
+
   if (!activeSection) {
     return (
-      <div className={`flex-1 ${themeClasses.bg} ${themeClasses.text} flex items-center justify-center p-8`}>
+      <div className={`flex-1 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} items-center justify-center p-8`}>
         <div className="text-center">
           <h1 className="text-4xl font-bold mb-4 opacity-50">ReadEx</h1>
           <p className="text-lg opacity-75">Select a section to start reading</p>
@@ -198,19 +244,27 @@ export default function ContentPanel({
   const lines = activeSection.content.split('\n').filter((line) => line.trim());
 
   return (
-    <div className={`flex-1 ${themeClasses.bg} ${themeClasses.text} flex flex-col overflow-hidden relative`}>
+    <div className={`flex-1 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} flex-col overflow-hidden relative`}>
+      {/* Header */}
       <div
-        className={`px-8 py-6 border-b ${themeClasses.border} border-opacity-20 shrink-0 flex justify-between items-center`}
+        className={`px-4 py-3 md:px-8 md:py-6 border-b ${themeClasses.border} border-opacity-20 shrink-0 flex justify-between items-center gap-3`}
       >
-        <h1 className="text-3xl font-bold truncate max-w-xl">{activeSection.title}</h1>
+        <button
+          onClick={onShowSidebar}
+          className={`md:hidden shrink-0 text-sm px-3 py-1.5 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
+        >
+          ← Sections
+        </button>
+        <h1 className="text-lg md:text-3xl font-bold truncate flex-1 md:max-w-xl">{activeSection.title}</h1>
         {isCanvasMode && (
-          <span className="text-xs opacity-50 px-3 py-1 border border-current rounded-full uppercase tracking-wider font-semibold">
+          <span className="hidden md:inline-block text-xs opacity-50 px-3 py-1 border border-current rounded-full uppercase tracking-wider font-semibold shrink-0">
             Visual Section
           </span>
         )}
       </div>
 
-      <div className={`px-8 py-4 border-b ${themeClasses.border} border-opacity-20 shrink-0`}>
+      {/* Notes */}
+      <div className={`px-4 py-3 md:px-8 md:py-4 border-b ${themeClasses.border} border-opacity-20 shrink-0`}>
         <label className="block text-xs font-semibold uppercase opacity-60 mb-2 tracking-wider">
           Notes
         </label>
@@ -224,10 +278,11 @@ export default function ContentPanel({
         />
       </div>
 
+      {/* Content Area */}
       <div
         ref={contentAreaRef}
         style={{ zoom: zoomLevel }}
-        className={`flex-1 overflow-y-auto px-8 py-8 ${isCanvasMode ? 'bg-black bg-opacity-5 flex flex-col items-center' : ''}`}
+        className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${isCanvasMode ? 'bg-black bg-opacity-5 flex flex-col items-center' : ''}`}
       >
         {isCanvasMode ? (
           <div className="w-full max-w-5xl">
@@ -253,21 +308,35 @@ export default function ContentPanel({
         )}
       </div>
 
+      {/* Floating zoom control */}
       <div
-        className={`absolute bottom-6 right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm`}
+        className={`absolute bottom-4 right-4 md:bottom-6 md:right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm`}
       >
-        <button onClick={() => adjustZoom(-ZOOM_STEP)} className={`w-7 h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`} title="Zoom out">
+        <button
+          onClick={() => adjustZoom(-ZOOM_STEP)}
+          className={`w-9 h-9 md:w-7 md:h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`}
+          title="Zoom out"
+        >
           −
         </button>
-        <button onClick={() => setZoomLevel(1)} className={`px-2 min-w-[3.2rem] text-center rounded ${themeClasses.hover}`} title="Reset zoom">
+        <button
+          onClick={() => setZoomLevel(1)}
+          className={`px-2 min-w-[3.2rem] text-center rounded ${themeClasses.hover}`}
+          title="Reset zoom"
+        >
           {Math.round(zoomLevel * 100)}%
         </button>
-        <button onClick={() => adjustZoom(ZOOM_STEP)} className={`w-7 h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`} title="Zoom in">
+        <button
+          onClick={() => adjustZoom(ZOOM_STEP)}
+          className={`w-9 h-9 md:w-7 md:h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`}
+          title="Zoom in"
+        >
           +
         </button>
       </div>
 
-      <div className={`px-8 py-4 border-t ${themeClasses.border} border-opacity-20 text-sm opacity-60 shrink-0`}>
+      {/* Footer Stats */}
+      <div className={`px-4 py-3 md:px-8 md:py-4 border-t ${themeClasses.border} border-opacity-20 text-sm opacity-60 shrink-0`}>
         {isCanvasMode ? (
           <span>Spans {activeSection.crops!.length} page(s)</span>
         ) : (

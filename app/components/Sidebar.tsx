@@ -18,6 +18,7 @@ interface SidebarProps {
   onProgressToggle: (id: string) => void;
   onPDFExtracted?: (sections: PDFSection[], file?: File) => void;
   onBackToLibrary?: () => void;
+  showOnMobile: boolean;
 }
 
 export default function Sidebar({
@@ -28,6 +29,7 @@ export default function Sidebar({
   onProgressToggle,
   onPDFExtracted,
   onBackToLibrary,
+  showOnMobile,
 }: SidebarProps) {
   const { theme, setTheme } = useTheme();
   const themeClasses = getThemeClasses(theme);
@@ -71,10 +73,12 @@ export default function Sidebar({
 
   return (
     <div
-      className={`w-full md:w-80 ${themeClasses.sidebg} ${themeClasses.sidetext} border-r ${themeClasses.border} flex flex-col h-screen overflow-hidden`}
+      className={`w-full md:w-80 ${themeClasses.sidebg} ${themeClasses.sidetext} border-r ${themeClasses.border} ${
+        showOnMobile ? 'flex' : 'hidden'
+      } md:flex flex-col h-screen overflow-hidden`}
     >
       {/* Upload Section */}
-      <div className="p-6 border-b border-current opacity-20">
+      <div className="p-4 md:p-6 border-b border-current opacity-20">
         {onBackToLibrary && (
           <button
             onClick={onBackToLibrary}
@@ -132,7 +136,7 @@ export default function Sidebar({
                   e.stopPropagation();
                   onProgressToggle(section.id);
                 }}
-                className={`flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition ${
+                className={`flex-shrink-0 w-6 h-6 md:w-5 md:h-5 rounded border-2 flex items-center justify-center transition ${
                   progress.has(section.id)
                     ? `${themeClasses.active} border-current`
                     : `border-current opacity-40 hover:opacity-70`
