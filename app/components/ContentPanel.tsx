@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { PageCrop } from '@/app/utils/pdfParser';
+import AskAI from '@/app/components/AskAI';
 
 interface Section {
   id: string;
@@ -16,6 +17,7 @@ interface ContentPanelProps {
   highlightedLines: Set<number>;
   onLineClick: (lineIndex: number) => void;
   pdfFile?: File | null;
+  activeBookId: string | null;
   noteValue: string;
   onNoteChange: (text: string) => void;
   showOnMobile: boolean;
@@ -67,12 +69,6 @@ function PageRenderer({
     const nativeCssWidth = viewportWidth / scale;
     const nativeCssCropHeight = (yBottom - yTop) / scale;
 
-    // Always measured from the stable, unzoomed outer container passed in
-    // as a prop -- never read live from a DOM node inside the zoomed
-    // wrapper, which is what caused the oscillation: `zoom` changes what
-    // descendant elements report as their own size, so a live measurement
-    // taken inside it is contaminated by whatever zoom level happens to be
-    // active at that instant.
     const availableWidth = containerWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
     const widthScale = availableWidth / nativeCssWidth;
 
@@ -103,9 +99,6 @@ function PageRenderer({
     canvas.style.transform = 'translateX(-50%)';
   };
 
-  // Re-fit whenever the stable measured container size or focus mode
-  // changes -- this is the single source of re-sizing now, decoupled
-  // entirely from the CSS zoom applied elsewhere in the tree.
   useEffect(() => {
     if (rawDimsRef.current) applySizing();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,6 +213,7 @@ export default function ContentPanel({
   highlightedLines,
   onLineClick,
   pdfFile,
+  activeBookId,
   noteValue,
   onNoteChange,
   showOnMobile,
@@ -232,6 +226,7 @@ export default function ContentPanel({
   const themeClasses = getThemeClasses(theme);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
+  const [isAskAIOpen, setIsAskAIOpen] = useState(false);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
@@ -284,9 +279,6 @@ export default function ContentPanel({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  // Single source of truth for available space: measures the OUTER,
-  // never-zoomed content area. Covers window resizes, section changes,
-  // and focus-mode toggling in one place.
   useEffect(() => {
     const el = contentAreaRef.current;
     if (!el) return;
@@ -358,6 +350,15 @@ export default function ContentPanel({
             Visual Section
           </span>
         )}
+        {!isFocusMode && (
+          <button
+            onClick={() => setIsAskAIOpen((v) => !v)}
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
+            title="Ask AI about this book"
+          >
+            💬
+          </button>
+        )}
         <button
           onClick={toggleFocusMode}
           className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
@@ -384,8 +385,7 @@ export default function ContentPanel({
         </div>
       )}
 
-      {/* Content Area -- outer div stays the stable, unzoomed measurement
-          target; inner div carries the zoom, fully decoupled */}
+      {/* Content Area */}
       <div
         ref={contentAreaRef}
         className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${
@@ -500,6 +500,10 @@ export default function ContentPanel({
             </>
           )}
         </div>
+      )}
+
+      {isAskAIOpen && (
+        <AskAI pdfFile={pdfFile ?? null} bookId={activeBookId} onClose={() => setIsAskAIOpen(false)} />
       )}
     </div>
   );

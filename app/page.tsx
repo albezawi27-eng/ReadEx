@@ -267,6 +267,7 @@ function HomeContent() {
             highlightedLines={highlightedLines}
             onLineClick={handleLineClick}
             pdfFile={pdfFile}
+            activeBookId={activeBookId}
             noteValue={activeSectionId ? notes[activeSectionId] ?? '' : ''}
             onNoteChange={(text) => activeSectionId && handleNoteChange(activeSectionId, text)}
             showOnMobile={!mobileShowSidebar}
