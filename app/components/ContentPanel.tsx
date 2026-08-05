@@ -384,10 +384,11 @@ export default function ContentPanel({
         </div>
       )}
 
-      {/* Content Area -- plain white in focus mode, no dark backdrop */}
+      {/* Content Area -- outer div is the stable, unzoomed measurement
+          target for focus-mode auto-fit sizing; inner div carries the
+          zoom level, decoupled from that measurement entirely. */}
       <div
         ref={contentAreaRef}
-        style={{ zoom: zoomLevel }}
         className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${
           isCanvasMode
             ? isFocusMode
@@ -396,35 +397,37 @@ export default function ContentPanel({
             : ''
         }`}
       >
-        {isCanvasMode ? (
-          <div className={`w-full ${isFocusMode ? 'flex flex-col items-center' : 'max-w-5xl'}`}>
-            {activeSection.crops!.map((crop, index) => (
-              <PageRenderer
-                key={`${activeSection.id}-${crop.pageNum}-${index}`}
-                pdfFile={pdfFile!}
-                crop={crop}
-                theme={theme}
-                focusMode={isFocusMode}
-                containerHeight={contentHeight}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="max-w-3xl">
-            {lines.map((line, index) => (
-              <div
-                key={index}
-                onClick={() => onLineClick(index)}
-                className={`py-2 px-3 mb-2 rounded cursor-pointer transition duration-200 ${
-                  highlightedLines.has(index) ? `${themeClasses.active} font-medium` : themeClasses.line
-                }`}
-              >
-                <span className="inline-block mr-3 text-xs opacity-40">{index + 1}</span>
-                {line}
-              </div>
-            ))}
-          </div>
-        )}
+        <div style={{ zoom: zoomLevel }} className={isCanvasMode ? 'w-full flex flex-col items-center' : 'w-full'}>
+          {isCanvasMode ? (
+            <div className={`w-full ${isFocusMode ? 'flex flex-col items-center' : 'max-w-5xl'}`}>
+              {activeSection.crops!.map((crop, index) => (
+                <PageRenderer
+                  key={`${activeSection.id}-${crop.pageNum}-${index}`}
+                  pdfFile={pdfFile!}
+                  crop={crop}
+                  theme={theme}
+                  focusMode={isFocusMode}
+                  containerHeight={contentHeight}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="max-w-3xl">
+              {lines.map((line, index) => (
+                <div
+                  key={index}
+                  onClick={() => onLineClick(index)}
+                  className={`py-2 px-3 mb-2 rounded cursor-pointer transition duration-200 ${
+                    highlightedLines.has(index) ? `${themeClasses.active} font-medium` : themeClasses.line
+                  }`}
+                >
+                  <span className="inline-block mr-3 text-xs opacity-40">{index + 1}</span>
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Section Navigation */}
