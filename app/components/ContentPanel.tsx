@@ -29,8 +29,21 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.1;
 const PAGE_DISPLAY_SCALE = 1.4;
+const FOCUS_MODE_MAX_SCALE = 3;
 
-function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop; theme: string }) {
+function PageRenderer({
+  pdfFile,
+  crop,
+  theme,
+  focusMode,
+  containerHeight,
+}: {
+  pdfFile: File;
+  crop: PageCrop;
+  theme: string;
+  focusMode: boolean;
+  containerHeight: number | null;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [isRendering, setIsRendering] = useState(false);
@@ -50,12 +63,21 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
 
     const { viewportWidth, viewportHeight, scale, yTop, yBottom } = dims;
     const nativeCssWidth = viewportWidth / scale;
+    const nativeCssCropHeight = (yBottom - yTop) / scale;
 
     const availableWidth = wrapper.parentElement?.clientWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
-    const effectiveScale = Math.min(PAGE_DISPLAY_SCALE, availableWidth / nativeCssWidth);
+    const widthScale = availableWidth / nativeCssWidth;
+
+    let effectiveScale: number;
+    if (focusMode && containerHeight) {
+      const heightScale = (containerHeight - 24) / nativeCssCropHeight;
+      effectiveScale = Math.min(FOCUS_MODE_MAX_SCALE, widthScale, heightScale);
+    } else {
+      effectiveScale = Math.min(PAGE_DISPLAY_SCALE, widthScale);
+    }
 
     const cssTop = (yTop / scale) * effectiveScale;
-    const cssHeight = ((yBottom - yTop) / scale) * effectiveScale;
+    const cssHeight = nativeCssCropHeight * effectiveScale;
     const cssWidth = nativeCssWidth * effectiveScale;
     const cssFullHeight = (viewportHeight / scale) * effectiveScale;
 
@@ -72,6 +94,14 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
     canvas.style.left = '50%';
     canvas.style.transform = 'translateX(-50%)';
   };
+
+  // Re-fit whenever focus mode toggles or the measured container height
+  // changes -- this is what lets the page grow into the extra vertical
+  // space focus mode frees up, without re-fetching or re-rendering the PDF.
+  useEffect(() => {
+    if (rawDimsRef.current) applySizing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusMode, containerHeight]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -157,19 +187,21 @@ function PageRenderer({ pdfFile, crop, theme }: { pdfFile: File; crop: PageCrop;
   }, [pdfFile, crop]);
 
   return (
-    <div className="flex flex-col items-center w-full mb-8">
-      <div className="text-xs opacity-40 mb-2 font-semibold tracking-wider uppercase">
-        Page {crop.pageNum}
-      </div>
+    <div className={`flex flex-col items-center w-full ${focusMode ? '' : 'mb-8'}`}>
+      {!focusMode && (
+        <div className="text-xs opacity-40 mb-2 font-semibold tracking-wider uppercase">
+          Page {crop.pageNum}
+        </div>
+      )}
       <div
         ref={wrapperRef}
         className={`bg-white shadow-2xl relative mx-auto transition-opacity duration-300 ${
-          theme === 'dark' ? 'ring-1 ring-[#3a3b42]' : ''
+          theme === 'dark' && !focusMode ? 'ring-1 ring-[#3a3b42]' : ''
         }`}
       >
         <canvas
           ref={canvasRef}
-          style={{ filter: theme === 'dark' ? 'brightness(0.92)' : 'none' }}
+          style={{ filter: theme === 'dark' && !focusMode ? 'brightness(0.92)' : 'none' }}
           className={isRendering ? 'opacity-30' : 'opacity-100'}
         />
         {isRendering && (
@@ -201,6 +233,7 @@ export default function ContentPanel({
   const themeClasses = getThemeClasses(theme);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -241,8 +274,6 @@ export default function ContentPanel({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onNavigateSection]);
 
-  // Keeps our focus-mode state in sync if the person exits real fullscreen
-  // via Escape or the browser's own UI, not just our button.
   useEffect(() => {
     const handleFullscreenChange = () => {
       if (!document.fullscreenElement) {
@@ -253,6 +284,23 @@ export default function ContentPanel({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
+  // Tracks the content area's real available height so PageRenderer can
+  // fit pages to it in focus mode -- ResizeObserver catches this correctly
+  // whether the change is a window resize, a fullscreen toggle, or the
+  // notes/header/footer appearing or disappearing.
+  useEffect(() => {
+    const el = contentAreaRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContentHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [activeSection?.id, isFocusMode]);
+
   const toggleFocusMode = () => {
     if (isFocusMode) {
       setIsFocusMode(false);
@@ -261,9 +309,6 @@ export default function ContentPanel({
       }
     } else {
       setIsFocusMode(true);
-      // Best-effort: real fullscreen isn't supported on iPhone Safari for
-      // arbitrary elements, so this can silently fail there -- the focus
-      // layout above still applies regardless, just without OS chrome hidden.
       panelRef.current?.requestFullscreen?.().catch(() => {});
     }
   };
@@ -322,7 +367,7 @@ export default function ContentPanel({
         </button>
       </div>
 
-      {/* Notes -- hidden in focus mode to maximize reading space */}
+      {/* Notes -- hidden in focus mode */}
       {!isFocusMode && (
         <div className={`px-4 py-3 md:px-8 md:py-4 border-b ${themeClasses.border} border-opacity-20 shrink-0`}>
           <label className="block text-xs font-semibold uppercase opacity-60 mb-2 tracking-wider">
@@ -339,16 +384,29 @@ export default function ContentPanel({
         </div>
       )}
 
-      {/* Content Area */}
+      {/* Content Area -- plain white in focus mode, no dark backdrop */}
       <div
         ref={contentAreaRef}
         style={{ zoom: zoomLevel }}
-        className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${isCanvasMode ? 'bg-black bg-opacity-5 flex flex-col items-center' : ''}`}
+        className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${
+          isCanvasMode
+            ? isFocusMode
+              ? 'bg-white flex flex-col items-center justify-center'
+              : 'bg-black bg-opacity-5 flex flex-col items-center'
+            : ''
+        }`}
       >
         {isCanvasMode ? (
-          <div className="w-full max-w-5xl">
+          <div className={`w-full ${isFocusMode ? 'flex flex-col items-center' : 'max-w-5xl'}`}>
             {activeSection.crops!.map((crop, index) => (
-              <PageRenderer key={`${activeSection.id}-${crop.pageNum}-${index}`} pdfFile={pdfFile!} crop={crop} theme={theme} />
+              <PageRenderer
+                key={`${activeSection.id}-${crop.pageNum}-${index}`}
+                pdfFile={pdfFile!}
+                crop={crop}
+                theme={theme}
+                focusMode={isFocusMode}
+                containerHeight={contentHeight}
+              />
             ))}
           </div>
         ) : (
@@ -369,7 +427,7 @@ export default function ContentPanel({
         )}
       </div>
 
-      {/* Section Navigation -- always visible, including in focus mode */}
+      {/* Section Navigation */}
       <div
         className={`px-4 py-2.5 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 shrink-0 flex items-center gap-2`}
       >
