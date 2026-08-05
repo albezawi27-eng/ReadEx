@@ -200,7 +200,9 @@ export default function ContentPanel({
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [isFocusMode, setIsFocusMode] = useState(false);
   const contentAreaRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
@@ -219,8 +221,6 @@ export default function ContentPanel({
     return () => document.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // Left/Right arrow keys move between sections -- ignored while typing
-  // (Notes textarea, or any input), so it never interferes with typing.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -240,6 +240,33 @@ export default function ContentPanel({
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onNavigateSection]);
+
+  // Keeps our focus-mode state in sync if the person exits real fullscreen
+  // via Escape or the browser's own UI, not just our button.
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        setIsFocusMode(false);
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const toggleFocusMode = () => {
+    if (isFocusMode) {
+      setIsFocusMode(false);
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    } else {
+      setIsFocusMode(true);
+      // Best-effort: real fullscreen isn't supported on iPhone Safari for
+      // arbitrary elements, so this can silently fail there -- the focus
+      // layout above still applies regardless, just without OS chrome hidden.
+      panelRef.current?.requestFullscreen?.().catch(() => {});
+    }
+  };
 
   const adjustZoom = (delta: number) => {
     setZoomLevel((prev) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
@@ -264,39 +291,53 @@ export default function ContentPanel({
   const hasNext = !!nextSectionTitle;
 
   return (
-    <div className={`flex-1 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} flex-col overflow-hidden relative`}>
+    <div
+      ref={panelRef}
+      className={`flex-1 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} flex-col overflow-hidden relative`}
+    >
       {/* Header */}
       <div
         className={`px-4 py-3 md:px-8 md:py-6 border-b ${themeClasses.border} border-opacity-20 shrink-0 flex justify-between items-center gap-3`}
       >
-        <button
-          onClick={onShowSidebar}
-          className={`md:hidden shrink-0 text-sm px-3 py-1.5 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
-        >
-          ← Sections
-        </button>
+        {!isFocusMode && (
+          <button
+            onClick={onShowSidebar}
+            className={`md:hidden shrink-0 text-sm px-3 py-1.5 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
+          >
+            ← Sections
+          </button>
+        )}
         <h1 className="text-lg md:text-3xl font-bold truncate flex-1 md:max-w-xl">{activeSection.title}</h1>
-        {isCanvasMode && (
+        {isCanvasMode && !isFocusMode && (
           <span className="hidden md:inline-block text-xs opacity-50 px-3 py-1 border border-current rounded-full uppercase tracking-wider font-semibold shrink-0">
             Visual Section
           </span>
         )}
+        <button
+          onClick={toggleFocusMode}
+          className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
+          title={isFocusMode ? 'Exit fullscreen' : 'Fullscreen reading mode'}
+        >
+          {isFocusMode ? '✕' : '⛶'}
+        </button>
       </div>
 
-      {/* Notes */}
-      <div className={`px-4 py-3 md:px-8 md:py-4 border-b ${themeClasses.border} border-opacity-20 shrink-0`}>
-        <label className="block text-xs font-semibold uppercase opacity-60 mb-2 tracking-wider">
-          Notes
-        </label>
-        <textarea
-          key={activeSection.id}
-          value={noteValue}
-          onChange={(e) => onNoteChange(e.target.value)}
-          placeholder="Jot down thoughts on this section..."
-          rows={3}
-          className={`w-full px-3 py-2 rounded-lg text-sm resize-y bg-transparent border ${themeClasses.border} border-opacity-30 focus:outline-none focus:ring-1 focus:ring-current`}
-        />
-      </div>
+      {/* Notes -- hidden in focus mode to maximize reading space */}
+      {!isFocusMode && (
+        <div className={`px-4 py-3 md:px-8 md:py-4 border-b ${themeClasses.border} border-opacity-20 shrink-0`}>
+          <label className="block text-xs font-semibold uppercase opacity-60 mb-2 tracking-wider">
+            Notes
+          </label>
+          <textarea
+            key={activeSection.id}
+            value={noteValue}
+            onChange={(e) => onNoteChange(e.target.value)}
+            placeholder="Jot down thoughts on this section..."
+            rows={3}
+            className={`w-full px-3 py-2 rounded-lg text-sm resize-y bg-transparent border ${themeClasses.border} border-opacity-30 focus:outline-none focus:ring-1 focus:ring-current`}
+          />
+        </div>
+      )}
 
       {/* Content Area */}
       <div
@@ -328,7 +369,7 @@ export default function ContentPanel({
         )}
       </div>
 
-      {/* Section Navigation */}
+      {/* Section Navigation -- always visible, including in focus mode */}
       <div
         className={`px-4 py-2.5 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 shrink-0 flex items-center gap-2`}
       >
@@ -358,7 +399,7 @@ export default function ContentPanel({
         </button>
       </div>
 
-      {/* Floating zoom control -- raised to clear the new nav row above */}
+      {/* Floating zoom control */}
       <div
         className={`absolute bottom-20 right-4 md:bottom-24 md:right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm`}
       >
@@ -385,18 +426,20 @@ export default function ContentPanel({
         </button>
       </div>
 
-      {/* Footer Stats */}
-      <div className={`px-4 py-2 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 text-xs md:text-sm opacity-60 shrink-0`}>
-        {isCanvasMode ? (
-          <span>Spans {activeSection.crops!.length} page(s)</span>
-        ) : (
-          <>
-            <span>{lines.length} lines</span>
-            <span className="mx-2">•</span>
-            <span>{highlightedLines.size} highlighted</span>
-          </>
-        )}
-      </div>
+      {/* Footer Stats -- hidden in focus mode */}
+      {!isFocusMode && (
+        <div className={`px-4 py-2 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 text-xs md:text-sm opacity-60 shrink-0`}>
+          {isCanvasMode ? (
+            <span>Spans {activeSection.crops!.length} page(s)</span>
+          ) : (
+            <>
+              <span>{lines.length} lines</span>
+              <span className="mx-2">•</span>
+              <span>{highlightedLines.size} highlighted</span>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

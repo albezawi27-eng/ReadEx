@@ -1,0 +1,3 @@
+System Design: Learn how to scale databases, design robust APIs, and handle state management.Security & Privacy: Master how to protect user data, prevent injections, and handle authentication.Product & UX: Understand your user deeply, because building the wrong app perfectly is the biggest waste of time.
+
+site: https://readex.kitab1.workers.dev/
