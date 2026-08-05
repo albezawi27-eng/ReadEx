@@ -36,12 +36,14 @@ function PageRenderer({
   crop,
   theme,
   focusMode,
+  containerWidth,
   containerHeight,
 }: {
   pdfFile: File;
   crop: PageCrop;
   theme: string;
   focusMode: boolean;
+  containerWidth: number | null;
   containerHeight: number | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -65,7 +67,13 @@ function PageRenderer({
     const nativeCssWidth = viewportWidth / scale;
     const nativeCssCropHeight = (yBottom - yTop) / scale;
 
-    const availableWidth = wrapper.parentElement?.clientWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
+    // Always measured from the stable, unzoomed outer container passed in
+    // as a prop -- never read live from a DOM node inside the zoomed
+    // wrapper, which is what caused the oscillation: `zoom` changes what
+    // descendant elements report as their own size, so a live measurement
+    // taken inside it is contaminated by whatever zoom level happens to be
+    // active at that instant.
+    const availableWidth = containerWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
     const widthScale = availableWidth / nativeCssWidth;
 
     let effectiveScale: number;
@@ -95,13 +103,13 @@ function PageRenderer({
     canvas.style.transform = 'translateX(-50%)';
   };
 
-  // Re-fit whenever focus mode toggles or the measured container height
-  // changes -- this is what lets the page grow into the extra vertical
-  // space focus mode frees up, without re-fetching or re-rendering the PDF.
+  // Re-fit whenever the stable measured container size or focus mode
+  // changes -- this is the single source of re-sizing now, decoupled
+  // entirely from the CSS zoom applied elsewhere in the tree.
   useEffect(() => {
     if (rawDimsRef.current) applySizing();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusMode, containerHeight]);
+  }, [focusMode, containerWidth, containerHeight]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -167,17 +175,8 @@ function PageRenderer({
 
     renderPage();
 
-    let resizeTimer: ReturnType<typeof setTimeout>;
-    const handleResize = () => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(applySizing, 150);
-    };
-    window.addEventListener('resize', handleResize);
-
     return () => {
       isCancelled = true;
-      clearTimeout(resizeTimer);
-      window.removeEventListener('resize', handleResize);
       if (renderTask) {
         try {
           renderTask.cancel();
@@ -233,6 +232,7 @@ export default function ContentPanel({
   const themeClasses = getThemeClasses(theme);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
+  const [contentWidth, setContentWidth] = useState<number | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -284,16 +284,16 @@ export default function ContentPanel({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  // Tracks the content area's real available height so PageRenderer can
-  // fit pages to it in focus mode -- ResizeObserver catches this correctly
-  // whether the change is a window resize, a fullscreen toggle, or the
-  // notes/header/footer appearing or disappearing.
+  // Single source of truth for available space: measures the OUTER,
+  // never-zoomed content area. Covers window resizes, section changes,
+  // and focus-mode toggling in one place.
   useEffect(() => {
     const el = contentAreaRef.current;
     if (!el) return;
 
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
+        setContentWidth(entry.contentRect.width);
         setContentHeight(entry.contentRect.height);
       }
     });
@@ -384,9 +384,8 @@ export default function ContentPanel({
         </div>
       )}
 
-      {/* Content Area -- outer div is the stable, unzoomed measurement
-          target for focus-mode auto-fit sizing; inner div carries the
-          zoom level, decoupled from that measurement entirely. */}
+      {/* Content Area -- outer div stays the stable, unzoomed measurement
+          target; inner div carries the zoom, fully decoupled */}
       <div
         ref={contentAreaRef}
         className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${
@@ -407,6 +406,7 @@ export default function ContentPanel({
                   crop={crop}
                   theme={theme}
                   focusMode={isFocusMode}
+                  containerWidth={contentWidth}
                   containerHeight={contentHeight}
                 />
               ))}
