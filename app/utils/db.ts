@@ -33,9 +33,6 @@ export interface StoredChatMessage {
 
 export interface StoredChat {
   bookId: string;
-  geminiFileUri: string | null;
-  geminiFileMimeType: string | null;
-  lastInteractionId: string | null;
   messages: StoredChatMessage[];
 }
 

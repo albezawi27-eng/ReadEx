@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { getSetting, setSetting, getChat, saveChat, StoredChatMessage } from '@/app/utils/db';
-import { uploadPdfToGemini, askGemini } from '@/app/utils/geminiClient';
+import { askGeminiAboutBook } from '@/app/utils/geminiClient';
 
 interface AskAIProps {
   pdfFile: File | null;
@@ -20,12 +20,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
   const [isEditingKey, setIsEditingKey] = useState(false);
 
   const [messages, setMessages] = useState<StoredChatMessage[]>([]);
-  const [geminiFileUri, setGeminiFileUri] = useState<string | null>(null);
-  const [geminiFileMimeType, setGeminiFileMimeType] = useState<string | null>(null);
-  const [lastInteractionId, setLastInteractionId] = useState<string | null>(null);
-
   const [questionInput, setQuestionInput] = useState('');
-  const [isUploading, setIsUploading] = useState(false);
   const [isAsking, setIsAsking] = useState(false);
   const [error, setError] = useState('');
 
@@ -41,39 +36,13 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
   useEffect(() => {
     if (!bookId) return;
     getChat(bookId).then((chat) => {
-      if (chat) {
-        setMessages(chat.messages);
-        setGeminiFileUri(chat.geminiFileUri);
-        setGeminiFileMimeType(chat.geminiFileMimeType);
-        setLastInteractionId(chat.lastInteractionId);
-      } else {
-        setMessages([]);
-        setGeminiFileUri(null);
-        setGeminiFileMimeType(null);
-        setLastInteractionId(null);
-      }
+      setMessages(chat?.messages ?? []);
     });
   }, [bookId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-
-  const persistChat = (
-    newMessages: StoredChatMessage[],
-    fileUri: string | null,
-    fileMimeType: string | null,
-    interactionId: string | null
-  ) => {
-    if (!bookId) return;
-    saveChat({
-      bookId,
-      geminiFileUri: fileUri,
-      geminiFileMimeType: fileMimeType,
-      lastInteractionId: interactionId,
-      messages: newMessages,
-    });
-  };
 
   const handleSaveKey = async () => {
     const trimmed = keyInput.trim();
@@ -90,48 +59,30 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
 
     setError('');
     setQuestionInput('');
+    const historyBeforeThisTurn = messages;
     const userMessage: StoredChatMessage = { role: 'user', text: question };
-    const messagesWithUser = [...messages, userMessage];
-    setMessages(messagesWithUser);
+    setMessages((prev) => [...prev, userMessage]);
+    setIsAsking(true);
 
     try {
-      let fileUri = geminiFileUri;
-      let fileMimeType = geminiFileMimeType;
-
-      if (!fileUri) {
-        setIsUploading(true);
-        const uploaded = await uploadPdfToGemini(pdfFile, apiKey);
-        fileUri = uploaded.uri;
-        fileMimeType = uploaded.mimeType;
-        setGeminiFileUri(fileUri);
-        setGeminiFileMimeType(fileMimeType);
-        setIsUploading(false);
-      }
-
-      setIsAsking(true);
-      const result = await askGemini({
+      const answerText = await askGeminiAboutBook({
         apiKey,
         question,
-        documentUri: lastInteractionId ? undefined : fileUri,
-        documentMimeType: lastInteractionId ? undefined : fileMimeType ?? undefined,
-        previousInteractionId: lastInteractionId ?? undefined,
+        history: historyBeforeThisTurn,
+        pdfFile,
       });
 
-      const modelMessage: StoredChatMessage = { role: 'model', text: result.answerText };
-      const finalMessages = [...messagesWithUser, modelMessage];
+      const modelMessage: StoredChatMessage = { role: 'model', text: answerText };
+      const finalMessages = [...historyBeforeThisTurn, userMessage, modelMessage];
       setMessages(finalMessages);
-      setLastInteractionId(result.interactionId);
-      persistChat(finalMessages, fileUri, fileMimeType, result.interactionId);
+      saveChat({ bookId, messages: finalMessages });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong asking Gemini.';
       setError(msg);
     } finally {
-      setIsUploading(false);
       setIsAsking(false);
     }
   };
-
-  const isBusy = isUploading || isAsking;
 
   return (
     <div
@@ -149,7 +100,6 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
           <p className="text-sm opacity-75 mb-3">
             Paste a free Gemini API key to use this feature. Your key stays on this device only.
           </p>
-          
           <button
             onClick={() => window.open('https://aistudio.google.com/apikey', '_blank', 'noopener,noreferrer')}
             className="text-sm underline opacity-80 hover:opacity-100 text-left"
@@ -183,7 +133,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {messages.length === 0 && (
               <p className="text-sm opacity-60">
-                Ask anything about this book -- Gemini reads the full PDF on your first question.
+                Ask anything about this book -- Gemini reads the full PDF with your first question.
               </p>
             )}
             {messages.map((msg, i) => (
@@ -197,11 +147,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
                 <div className="whitespace-pre-wrap">{msg.text}</div>
               </div>
             ))}
-            {isBusy && (
-              <div className="text-sm opacity-60 italic">
-                {isUploading ? 'Reading the PDF...' : 'Thinking...'}
-              </div>
-            )}
+            {isAsking && <div className="text-sm opacity-60 italic">Thinking...</div>}
             {error && <div className="text-sm text-red-500">{error}</div>}
             <div ref={messagesEndRef} />
           </div>
@@ -212,14 +158,14 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
                 type="text"
                 value={questionInput}
                 onChange={(e) => setQuestionInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !isBusy && handleAsk()}
+                onKeyDown={(e) => e.key === 'Enter' && !isAsking && handleAsk()}
                 placeholder="Ask a question..."
-                disabled={isBusy}
+                disabled={isAsking}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm bg-transparent border ${themeClasses.border} border-opacity-30 focus:outline-none focus:ring-1 focus:ring-current disabled:opacity-50`}
               />
               <button
                 onClick={handleAsk}
-                disabled={isBusy || !questionInput.trim()}
+                disabled={isAsking || !questionInput.trim()}
                 className={`px-4 py-2 rounded-lg text-sm font-medium ${themeClasses.button} disabled:opacity-40`}
               >
                 Ask
