@@ -1,6 +1,11 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import remarkGfm from 'remark-gfm';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { getSetting, setSetting, getChat, saveChat, StoredChatMessage } from '@/app/utils/db';
 import { askGeminiAboutBook } from '@/app/utils/geminiClient';
@@ -9,6 +14,15 @@ interface AskAIProps {
   pdfFile: File | null;
   bookId: string | null;
   onClose: () => void;
+}
+
+// Gemini sometimes uses \( \) / \[ \] for math instead of $ $ / $$ $$ --
+// remark-math only recognizes the dollar-sign form, so normalize both
+// conventions before rendering rather than gambling on which one shows up.
+function normalizeLatexDelimiters(text: string): string {
+  return text
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, expr) => `$$${expr}$$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, expr) => `$${expr}$`);
 }
 
 export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
@@ -110,7 +124,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
             type="password"
             value={keyInput}
             onChange={(e) => setKeyInput(e.target.value)}
-            placeholder="AIza..."
+            placeholder="AIza... or AQ...."
             className={`w-full mt-3 px-3 py-2 rounded-lg text-sm bg-transparent border ${themeClasses.border} border-opacity-30 focus:outline-none focus:ring-1 focus:ring-current`}
           />
           <button
@@ -144,7 +158,18 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
                 <div className="text-xs opacity-50 mb-1 uppercase tracking-wide">
                   {msg.role === 'user' ? 'You' : 'Gemini'}
                 </div>
-                <div className="whitespace-pre-wrap">{msg.text}</div>
+                {msg.role === 'user' ? (
+                  <div className="whitespace-pre-wrap">{msg.text}</div>
+                ) : (
+                  <div className="ai-markdown">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkMath, remarkGfm]}
+                      rehypePlugins={[rehypeKatex]}
+                    >
+                      {normalizeLatexDelimiters(msg.text)}
+                    </ReactMarkdown>
+                  </div>
+                )}
               </div>
             ))}
             {isAsking && <div className="text-sm opacity-60 italic">Thinking...</div>}
