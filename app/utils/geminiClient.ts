@@ -2,58 +2,87 @@
 
 import { StoredChatMessage } from '@/app/utils/db';
 
-// If this ever 404s or comes back model-not-found, check the current
-// free-tier line-up at https://ai.google.dev/pricing and swap this string.
 const GEMINI_MODEL = 'gemini-3.5-flash';
 const GENERATE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const UPLOAD_BASE = 'https://generativelanguage.googleapis.com/upload/v1beta/files';
 
-function blobToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // Strip the "data:application/pdf;base64," prefix -- inlineData.data
-      // needs pure base64, nothing else.
-      const base64 = result.split(',')[1] ?? '';
-      resolve(base64);
-    };
-    reader.onerror = () => reject(new Error('Failed to read PDF file for upload.'));
-    reader.readAsDataURL(file);
+export async function uploadPdfToGemini(
+  file: File,
+  apiKey: string
+): Promise<{ uri: string; mimeType: string }> {
+  const numBytes = file.size;
+  const mimeType = 'application/pdf';
+
+  const startResponse = await fetch(UPLOAD_BASE, {
+    method: 'POST',
+    headers: {
+      'x-goog-api-key': apiKey,
+      'X-Goog-Upload-Protocol': 'resumable',
+      'X-Goog-Upload-Command': 'start',
+      'X-Goog-Upload-Header-Content-Length': String(numBytes),
+      'X-Goog-Upload-Header-Content-Type': mimeType,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ file: { display_name: file.name } }),
   });
-}
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function buildContents(
-  history: StoredChatMessage[],
-  newQuestion: string,
-  pdfFile: File
-): Promise<any[]> {
-  const base64Data = await blobToBase64(pdfFile);
-  const allTurns: StoredChatMessage[] = [...history, { role: 'user', text: newQuestion }];
-  const firstUserIndex = allTurns.findIndex((m) => m.role === 'user');
+  if (!startResponse.ok) {
+    const errText = await startResponse.text().catch(() => '');
+    throw new Error(`Gemini upload session failed (${startResponse.status}): ${errText}`);
+  }
 
-  return allTurns.map((msg, index) => {
-    if (index === firstUserIndex) {
-      return {
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType: 'application/pdf', data: base64Data } },
-          { text: msg.text },
-        ],
-      };
-    }
-    return { role: msg.role, parts: [{ text: msg.text }] };
+  const uploadUrl = startResponse.headers.get('x-goog-upload-url');
+  if (!uploadUrl) {
+    throw new Error('Gemini did not return an upload URL. The API response format may have changed.');
+  }
+
+  const fileBytes = await file.arrayBuffer();
+  const uploadResponse = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Length': String(numBytes),
+      'X-Goog-Upload-Offset': '0',
+      'X-Goog-Upload-Command': 'upload, finalize',
+    },
+    body: fileBytes,
   });
+
+  if (!uploadResponse.ok) {
+    const errText = await uploadResponse.text().catch(() => '');
+    throw new Error(`Gemini file upload failed (${uploadResponse.status}): ${errText}`);
+  }
+
+  const uploadData = await uploadResponse.json();
+  const uploadedUri = uploadData?.file?.uri;
+  const uploadedMimeType = uploadData?.file?.mimeType || mimeType;
+
+  if (!uploadedUri) {
+    throw new Error('Gemini upload succeeded but returned no file URI.');
+  }
+
+  return { uri: uploadedUri, mimeType: uploadedMimeType };
 }
 
 export async function askGeminiAboutBook(params: {
   apiKey: string;
   question: string;
   history: StoredChatMessage[];
-  pdfFile: File;
+  fileUri: string;
+  fileMimeType: string;
 }): Promise<string> {
-  const { apiKey, question, history, pdfFile } = params;
-  const contents = await buildContents(history, question, pdfFile);
+  const { apiKey, question, history, fileUri, fileMimeType } = params;
+
+  const historyContents = history.map((msg) => ({
+    role: msg.role,
+    parts: [{ text: msg.text }],
+  }));
+
+  // The file is referenced (cheap) rather than embedded (expensive) on
+  // every request -- only the upload step pays the full document cost.
+  const newTurn = {
+    role: 'user',
+    parts: [{ fileData: { fileUri, mimeType: fileMimeType } }, { text: question }],
+  };
 
   const response = await fetch(GENERATE_URL, {
     method: 'POST',
@@ -61,7 +90,7 @@ export async function askGeminiAboutBook(params: {
       'x-goog-api-key': apiKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ contents }),
+    body: JSON.stringify({ contents: [...historyContents, newTurn] }),
   });
 
   if (!response.ok) {

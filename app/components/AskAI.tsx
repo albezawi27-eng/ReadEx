@@ -8,7 +8,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { getSetting, setSetting, getChat, saveChat, StoredChatMessage } from '@/app/utils/db';
-import { askGeminiAboutBook } from '@/app/utils/geminiClient';
+import { uploadPdfToGemini, askGeminiAboutBook } from '@/app/utils/geminiClient';
 
 interface AskAIProps {
   pdfFile: File | null;
@@ -16,13 +16,16 @@ interface AskAIProps {
   onClose: () => void;
 }
 
-// Gemini sometimes uses \( \) / \[ \] for math instead of $ $ / $$ $$ --
-// remark-math only recognizes the dollar-sign form, so normalize both
-// conventions before rendering rather than gambling on which one shows up.
 function normalizeLatexDelimiters(text: string): string {
   return text
     .replace(/\\\[([\s\S]*?)\\\]/g, (_, expr) => `$$${expr}$$`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_, expr) => `$${expr}$`);
+}
+
+interface FileRef {
+  bookId: string;
+  uri: string;
+  mimeType: string;
 }
 
 export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
@@ -35,10 +38,16 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
 
   const [messages, setMessages] = useState<StoredChatMessage[]>([]);
   const [questionInput, setQuestionInput] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
   const [isAsking, setIsAsking] = useState(false);
   const [error, setError] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Session-only cache: the uploaded file's reference is intentionally NOT
+  // persisted to IndexedDB, since Gemini auto-deletes uploads after 48
+  // hours -- reopening a book later just re-uploads once, avoiding any
+  // stale-reference bugs entirely.
+  const fileRefCacheRef = useRef<FileRef | null>(null);
 
   useEffect(() => {
     getSetting('geminiApiKey').then((key) => {
@@ -76,14 +85,24 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
     const historyBeforeThisTurn = messages;
     const userMessage: StoredChatMessage = { role: 'user', text: question };
     setMessages((prev) => [...prev, userMessage]);
-    setIsAsking(true);
 
     try {
+      let fileRef = fileRefCacheRef.current;
+      if (!fileRef || fileRef.bookId !== bookId) {
+        setIsUploading(true);
+        const uploaded = await uploadPdfToGemini(pdfFile, apiKey);
+        fileRef = { bookId, uri: uploaded.uri, mimeType: uploaded.mimeType };
+        fileRefCacheRef.current = fileRef;
+        setIsUploading(false);
+      }
+
+      setIsAsking(true);
       const answerText = await askGeminiAboutBook({
         apiKey,
         question,
         history: historyBeforeThisTurn,
-        pdfFile,
+        fileUri: fileRef.uri,
+        fileMimeType: fileRef.mimeType,
       });
 
       const modelMessage: StoredChatMessage = { role: 'model', text: answerText };
@@ -93,10 +112,19 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong asking Gemini.';
       setError(msg);
+      // If the upload step itself is what's blocked (e.g. a CORS wall),
+      // clear the cache so the next attempt retries cleanly instead of
+      // reusing a reference that never actually succeeded.
+      if (fileRefCacheRef.current?.bookId === bookId && !fileRefCacheRef.current.uri) {
+        fileRefCacheRef.current = null;
+      }
     } finally {
+      setIsUploading(false);
       setIsAsking(false);
     }
   };
+
+  const isBusy = isUploading || isAsking;
 
   return (
     <div
@@ -162,17 +190,18 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
                   <div className="whitespace-pre-wrap">{msg.text}</div>
                 ) : (
                   <div className="ai-markdown">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkMath, remarkGfm]}
-                      rehypePlugins={[rehypeKatex]}
-                    >
+                    <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
                       {normalizeLatexDelimiters(msg.text)}
                     </ReactMarkdown>
                   </div>
                 )}
               </div>
             ))}
-            {isAsking && <div className="text-sm opacity-60 italic">Thinking...</div>}
+            {isBusy && (
+              <div className="text-sm opacity-60 italic">
+                {isUploading ? 'Uploading PDF (first question only)...' : 'Thinking...'}
+              </div>
+            )}
             {error && <div className="text-sm text-red-500">{error}</div>}
             <div ref={messagesEndRef} />
           </div>
@@ -183,14 +212,14 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
                 type="text"
                 value={questionInput}
                 onChange={(e) => setQuestionInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !isAsking && handleAsk()}
+                onKeyDown={(e) => e.key === 'Enter' && !isBusy && handleAsk()}
                 placeholder="Ask a question..."
-                disabled={isAsking}
+                disabled={isBusy}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm bg-transparent border ${themeClasses.border} border-opacity-30 focus:outline-none focus:ring-1 focus:ring-current disabled:opacity-50`}
               />
               <button
                 onClick={handleAsk}
-                disabled={isAsking || !questionInput.trim()}
+                disabled={isBusy || !questionInput.trim()}
                 className={`px-4 py-2 rounded-lg text-sm font-medium ${themeClasses.button} disabled:opacity-40`}
               >
                 Ask
