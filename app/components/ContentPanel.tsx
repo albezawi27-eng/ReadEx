@@ -232,6 +232,12 @@ export default function ContentPanel({
   const contentAreaRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
+  // Mirrors zoomLevel on every render without needing its own effect --
+  // read inside the touch handler below so a pinch gesture always sees the
+  // latest value without forcing that effect to re-subscribe mid-gesture.
+  const zoomLevelRef = useRef(zoomLevel);
+  zoomLevelRef.current = zoomLevel;
+
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
@@ -247,6 +253,62 @@ export default function ContentPanel({
 
     document.addEventListener('wheel', handleWheel, { passive: false });
     return () => document.removeEventListener('wheel', handleWheel);
+  }, []);
+
+  // Two-finger pinch, scoped to the content area only -- native page-wide
+  // pinch-zoom is disabled globally via layout.tsx's viewport config, so
+  // this is the only zoom mechanism touch users get, same idea as ctrl+
+  // scroll above but for touch. Effect deps stay empty and the running
+  // gesture state lives in plain closure variables so a mid-gesture state
+  // update never tears down and re-attaches the listeners.
+  useEffect(() => {
+    let initialPinchDistance: number | null = null;
+    let initialZoomAtPinchStart = 1;
+
+    const getDistance = (touches: TouchList) => {
+      const dx = touches[1].clientX - touches[0].clientX;
+      const dy = touches[1].clientY - touches[0].clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      const insideContent = !!contentAreaRef.current?.contains(e.target as Node);
+      if (!insideContent) return;
+
+      initialPinchDistance = getDistance(e.touches);
+      initialZoomAtPinchStart = zoomLevelRef.current;
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || initialPinchDistance === null) return;
+      const insideContent = !!contentAreaRef.current?.contains(e.target as Node);
+      if (!insideContent) return;
+
+      e.preventDefault();
+      const currentDistance = getDistance(e.touches);
+      const scaleFactor = currentDistance / initialPinchDistance;
+      const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, initialZoomAtPinchStart * scaleFactor));
+      setZoomLevel(next);
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        initialPinchDistance = null;
+      }
+    };
+
+    document.addEventListener('touchstart', handleTouchStart, { passive: true });
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd, { passive: true });
+    document.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+
+    return () => {
+      document.removeEventListener('touchstart', handleTouchStart);
+      document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchend', handleTouchEnd);
+      document.removeEventListener('touchcancel', handleTouchEnd);
+    };
   }, []);
 
   useEffect(() => {
@@ -385,9 +447,12 @@ export default function ContentPanel({
         </div>
       )}
 
-      {/* Content Area */}
+      {/* Content Area -- touchAction: pan-y lets normal vertical scroll
+          stay native/smooth while pinch-zoom is suppressed for the custom
+          handler above to take over cleanly */}
       <div
         ref={contentAreaRef}
+        style={{ touchAction: 'pan-y' }}
         className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${
           isCanvasMode
             ? isFocusMode
