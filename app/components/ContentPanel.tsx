@@ -505,16 +505,11 @@ export default function ContentPanel({
         </div>
       )}
 
-      {/* Content Area */}
-      <div
+     <div
         ref={contentAreaRef}
         style={{ touchAction: 'pan-y' }}
-        className={`flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 ${
-          isCanvasMode
-            ? isFocusMode
-              ? 'bg-white flex flex-col items-center justify-center'
-              : 'bg-black bg-opacity-5 flex flex-col items-center'
-            : ''
+        className={`flex-1 overflow-auto px-4 py-4 md:px-8 md:py-8 ${
+          isCanvasMode ? (isFocusMode ? 'bg-white' : 'bg-black bg-opacity-5') : ''
         }`}
       >
         <div style={{ zoom: zoomLevel }} className={isCanvasMode ? 'w-full flex flex-col items-center' : 'w-full'}>
