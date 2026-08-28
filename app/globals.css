@@ -25,6 +25,10 @@ body {
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }
 
+html, body {
+  touch-action: pan-y;
+}
+
 .ai-markdown p {
   margin-bottom: 0.5rem;
 }

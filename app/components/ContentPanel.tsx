@@ -366,6 +366,29 @@ export default function ContentPanel({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onNavigateSection]);
 
+    // Safari fires its own proprietary Gesture events for pinch/rotate,
+  // separate from standard touch events -- iOS ignores viewport-meta
+  // zoom-disabling entirely, so this is the only reliable way left to
+  // stop native whole-page pinch-zoom there. Doesn't interfere with the
+  // custom touchstart/touchmove handler above; they're independent
+  // event streams for the same physical gesture.
+  useEffect(() => {
+    const preventGesture = (e: Event) => {
+      e.preventDefault();
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    document.addEventListener('gesturestart' as any, preventGesture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    document.addEventListener('gesturechange' as any, preventGesture);
+    return () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      document.removeEventListener('gesturestart' as any, preventGesture);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      document.removeEventListener('gesturechange' as any, preventGesture);
+    };
+  }, []);
+
+
   useEffect(() => {
     const handleFullscreenChange = () => {
       if (!document.fullscreenElement) {
