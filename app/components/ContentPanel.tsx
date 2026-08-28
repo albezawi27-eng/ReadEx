@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { TransformWrapper, TransformComponent, ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { PageCrop } from '@/app/utils/pdfParser';
 import AskAI from '@/app/components/AskAI';
@@ -231,23 +232,19 @@ export default function ContentPanel({
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const transformRef = useRef<ReactZoomPanPinchRef>(null);
 
-  const zoomLevelRef = useRef(zoomLevel);
-  zoomLevelRef.current = zoomLevel;
+  const isCanvasMode = !!(pdfFile && activeSection?.crops && activeSection.crops.length > 0);
+  const isCanvasModeRef = useRef(isCanvasMode);
+  isCanvasModeRef.current = isCanvasMode;
 
-  // Set during a pinch's touchmove, consumed by the layout effect right
-  // after the resulting zoom change lands -- keeps whatever content point
-  // was under the fingers fixed in place instead of the view re-centering.
-  const pinchAnchorRef = useRef<{
-    touchX: number;
-    touchY: number;
-    contentX: number;
-    contentY: number;
-  } | null>(null);
-
+  // Desktop ctrl+scroll zoom -- only handles TEXT-mode content now.
+  // Canvas mode's wheel zoom is handled natively by TransformWrapper below,
+  // so this bails out early there to avoid double-handling the same event.
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
+      if (isCanvasModeRef.current) return;
       const insideContent = !!contentAreaRef.current?.contains(e.target as Node);
       e.preventDefault();
       if (!insideContent) return;
@@ -261,90 +258,6 @@ export default function ContentPanel({
     document.addEventListener('wheel', handleWheel, { passive: false });
     return () => document.removeEventListener('wheel', handleWheel);
   }, []);
-
-  // Two-finger pinch, scoped to the content area only -- native page-wide
-  // pinch-zoom is disabled globally via layout.tsx's viewport config.
-  useEffect(() => {
-    let initialPinchDistance: number | null = null;
-    let initialZoomAtPinchStart = 1;
-
-    const getDistance = (touches: TouchList) => {
-      const dx = touches[1].clientX - touches[0].clientX;
-      const dy = touches[1].clientY - touches[0].clientY;
-      return Math.sqrt(dx * dx + dy * dy);
-    };
-
-    const handleTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 2) return;
-      const insideContent = !!contentAreaRef.current?.contains(e.target as Node);
-      if (!insideContent) return;
-
-      initialPinchDistance = getDistance(e.touches);
-      initialZoomAtPinchStart = zoomLevelRef.current;
-    };
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 2 || initialPinchDistance === null) return;
-      const container = contentAreaRef.current;
-      if (!container) return;
-      const insideContent = !!container.contains(e.target as Node);
-      if (!insideContent) return;
-
-      e.preventDefault();
-
-      const currentDistance = getDistance(e.touches);
-      const scaleFactor = currentDistance / initialPinchDistance;
-      const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, initialZoomAtPinchStart * scaleFactor));
-
-      const rect = container.getBoundingClientRect();
-      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      const touchX = midX - rect.left;
-      const touchY = midY - rect.top;
-      const currentZoom = zoomLevelRef.current;
-
-      pinchAnchorRef.current = {
-        touchX,
-        touchY,
-        contentX: (container.scrollLeft + touchX) / currentZoom,
-        contentY: (container.scrollTop + touchY) / currentZoom,
-      };
-
-      setZoomLevel(newZoom);
-    };
-
-    const handleTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) {
-        initialPinchDistance = null;
-      }
-    };
-
-    document.addEventListener('touchstart', handleTouchStart, { passive: true });
-    document.addEventListener('touchmove', handleTouchMove, { passive: false });
-    document.addEventListener('touchend', handleTouchEnd, { passive: true });
-    document.addEventListener('touchcancel', handleTouchEnd, { passive: true });
-
-    return () => {
-      document.removeEventListener('touchstart', handleTouchStart);
-      document.removeEventListener('touchmove', handleTouchMove);
-      document.removeEventListener('touchend', handleTouchEnd);
-      document.removeEventListener('touchcancel', handleTouchEnd);
-    };
-  }, []);
-
-  // Runs right after each pinch-driven zoom change lands -- repositions
-  // scroll so the point under the fingers doesn't drift. No-ops for
-  // button/wheel-driven zoom changes, since those never set the anchor.
-  useLayoutEffect(() => {
-    const anchor = pinchAnchorRef.current;
-    const container = contentAreaRef.current;
-    if (!anchor || !container) return;
-
-    container.scrollLeft = anchor.contentX * zoomLevel - anchor.touchX;
-    container.scrollTop = anchor.contentY * zoomLevel - anchor.touchY;
-
-    pinchAnchorRef.current = null;
-  }, [zoomLevel]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -365,29 +278,6 @@ export default function ContentPanel({
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onNavigateSection]);
-
-    // Safari fires its own proprietary Gesture events for pinch/rotate,
-  // separate from standard touch events -- iOS ignores viewport-meta
-  // zoom-disabling entirely, so this is the only reliable way left to
-  // stop native whole-page pinch-zoom there. Doesn't interfere with the
-  // custom touchstart/touchmove handler above; they're independent
-  // event streams for the same physical gesture.
-  useEffect(() => {
-    const preventGesture = (e: Event) => {
-      e.preventDefault();
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    document.addEventListener('gesturestart' as any, preventGesture);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    document.addEventListener('gesturechange' as any, preventGesture);
-    return () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      document.removeEventListener('gesturestart' as any, preventGesture);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      document.removeEventListener('gesturechange' as any, preventGesture);
-    };
-  }, []);
-
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -413,6 +303,14 @@ export default function ContentPanel({
     return () => observer.disconnect();
   }, [activeSection?.id, isFocusMode]);
 
+  // Whenever the section changes, reset the pan/zoom library's own
+  // transform state so a new page doesn't inherit the previous one's
+  // zoom/pan position.
+  useEffect(() => {
+    transformRef.current?.resetTransform(0);
+    setZoomLevel(1);
+  }, [activeSection?.id]);
+
   const toggleFocusMode = () => {
     if (isFocusMode) {
       setIsFocusMode(false);
@@ -426,7 +324,23 @@ export default function ContentPanel({
   };
 
   const adjustZoom = (delta: number) => {
-    setZoomLevel((prev) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
+    if (isCanvasMode && transformRef.current) {
+      if (delta > 0) {
+        transformRef.current.zoomIn(delta, 200);
+      } else {
+        transformRef.current.zoomOut(Math.abs(delta), 200);
+      }
+    } else {
+      setZoomLevel((prev) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
+    }
+  };
+
+  const resetZoom = () => {
+    if (isCanvasMode && transformRef.current) {
+      transformRef.current.resetTransform();
+    } else {
+      setZoomLevel(1);
+    }
   };
 
   const rootVisibilityClass = `${showOnMobile ? 'flex' : 'hidden'} md:flex`;
@@ -442,7 +356,6 @@ export default function ContentPanel({
     );
   }
 
-  const isCanvasMode = !!(pdfFile && activeSection.crops && activeSection.crops.length > 0);
   const lines = activeSection.content.split('\n').filter((line) => line.trim());
   const hasPrev = !!prevSectionTitle;
   const hasNext = !!nextSectionTitle;
@@ -505,29 +418,54 @@ export default function ContentPanel({
         </div>
       )}
 
-     <div
+      {/* Content Area */}
+      <div
         ref={contentAreaRef}
-        style={{ touchAction: 'pan-y' }}
-        className={`flex-1 overflow-auto px-4 py-4 md:px-8 md:py-8 ${
+        className={`flex-1 overflow-hidden relative ${
           isCanvasMode ? (isFocusMode ? 'bg-white' : 'bg-black bg-opacity-5') : ''
         }`}
       >
-        <div style={{ zoom: zoomLevel }} className={isCanvasMode ? 'w-full flex flex-col items-center' : 'w-full'}>
-          {isCanvasMode ? (
-            <div className={`w-full ${isFocusMode ? 'flex flex-col items-center' : 'max-w-5xl'}`}>
-              {activeSection.crops!.map((crop, index) => (
-                <PageRenderer
-                  key={`${activeSection.id}-${crop.pageNum}-${index}`}
-                  pdfFile={pdfFile!}
-                  crop={crop}
-                  theme={theme}
-                  focusMode={isFocusMode}
-                  containerWidth={contentWidth}
-                  containerHeight={contentHeight}
-                />
-              ))}
-            </div>
-          ) : (
+        {isCanvasMode ? (
+          <TransformWrapper
+            ref={transformRef}
+            initialScale={1}
+            minScale={MIN_ZOOM}
+            maxScale={MAX_ZOOM}
+            limitToBounds={false}
+            centerOnInit
+            doubleClick={{ disabled: true }}
+            onTransformed={(_, state) => setZoomLevel(state.scale)}
+          >
+            <TransformComponent
+              wrapperStyle={{ width: '100%', height: '100%' }}
+              contentStyle={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                width: '100%',
+                padding: isFocusMode ? '0' : '1rem',
+              }}
+            >
+              <div className={`w-full ${isFocusMode ? 'flex flex-col items-center' : 'max-w-5xl'}`}>
+                {activeSection.crops!.map((crop, index) => (
+                  <PageRenderer
+                    key={`${activeSection.id}-${crop.pageNum}-${index}`}
+                    pdfFile={pdfFile!}
+                    crop={crop}
+                    theme={theme}
+                    focusMode={isFocusMode}
+                    containerWidth={contentWidth}
+                    containerHeight={contentHeight}
+                  />
+                ))}
+              </div>
+            </TransformComponent>
+          </TransformWrapper>
+        ) : (
+          <div
+            style={{ zoom: zoomLevel }}
+            className="w-full h-full overflow-auto px-4 py-4 md:px-8 md:py-8"
+          >
             <div className="max-w-3xl">
               {lines.map((line, index) => (
                 <div
@@ -542,8 +480,8 @@ export default function ContentPanel({
                 </div>
               ))}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Section Navigation */}
@@ -578,7 +516,7 @@ export default function ContentPanel({
 
       {/* Floating zoom control */}
       <div
-        className={`absolute bottom-20 right-4 md:bottom-24 md:right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm`}
+        className={`absolute bottom-20 right-4 md:bottom-24 md:right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm z-10`}
       >
         <button
           onClick={() => adjustZoom(-ZOOM_STEP)}
@@ -588,7 +526,7 @@ export default function ContentPanel({
           −
         </button>
         <button
-          onClick={() => setZoomLevel(1)}
+          onClick={resetZoom}
           className={`px-2 min-w-[3.2rem] text-center rounded ${themeClasses.hover}`}
           title="Reset zoom"
         >
