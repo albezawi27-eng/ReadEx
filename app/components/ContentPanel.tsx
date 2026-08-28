@@ -1,11 +1,10 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { TransformWrapper, TransformComponent, ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
+import { TransformWrapper, TransformComponent, ReactZoomPanPinchRef, ReactZoomPanPinchState } from 'react-zoom-pan-pinch';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { PageCrop } from '@/app/utils/pdfParser';
 import AskAI from '@/app/components/AskAI';
-
 interface Section {
   id: string;
   title: string;
@@ -427,15 +426,15 @@ export default function ContentPanel({
       >
         {isCanvasMode ? (
           <TransformWrapper
-            ref={transformRef}
-            initialScale={1}
-            minScale={MIN_ZOOM}
-            maxScale={MAX_ZOOM}
-            limitToBounds={false}
-            centerOnInit
-            doubleClick={{ disabled: true }}
-            onTransformed={(_, state) => setZoomLevel(state.scale)}
-          >
+          ref={transformRef}
+          initialScale={1}
+          minScale={MIN_ZOOM}
+          maxScale={MAX_ZOOM}
+          limitToBounds={false}
+          centerOnInit
+          doubleClick={{ disabled: true }}
+          onTransform={(_, state) => setZoomLevel(state.scale)}
+        >
             <TransformComponent
               wrapperStyle={{ width: '100%', height: '100%' }}
               contentStyle={{
@@ -523,7 +522,7 @@ export default function ContentPanel({
           className={`w-9 h-9 md:w-7 md:h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`}
           title="Zoom out"
         >
-          −
+          
         </button>
         <button
           onClick={resetZoom}
