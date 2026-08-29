@@ -1,10 +1,14 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { TransformWrapper, TransformComponent, ReactZoomPanPinchRef, ReactZoomPanPinchState } from 'react-zoom-pan-pinch';
+import { TransformWrapper, TransformComponent, ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { PageCrop } from '@/app/utils/pdfParser';
+import { StoredAnnotationItem } from '@/app/utils/db';
+import { useAnnotations } from '@/app/hooks/useAnnotations';
+import AnnotationLayer from '@/app/components/AnnotationLayer';
 import AskAI from '@/app/components/AskAI';
+
 interface Section {
   id: string;
   title: string;
@@ -32,6 +36,8 @@ const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.1;
 const PAGE_DISPLAY_SCALE = 1.4;
 const FOCUS_MODE_MAX_SCALE = 3;
+const DRAW_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#111827'];
+const DRAW_WIDTHS = [2, 4, 7];
 
 function PageRenderer({
   pdfFile,
@@ -40,6 +46,8 @@ function PageRenderer({
   focusMode,
   containerWidth,
   containerHeight,
+  onNativeSizeReady,
+  children,
 }: {
   pdfFile: File;
   crop: PageCrop;
@@ -47,6 +55,8 @@ function PageRenderer({
   focusMode: boolean;
   containerWidth: number | null;
   containerHeight: number | null;
+  onNativeSizeReady?: (width: number, height: number) => void;
+  children?: React.ReactNode;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -149,6 +159,8 @@ function PageRenderer({
           yTop,
           yBottom,
         };
+
+        onNativeSizeReady?.(viewport.width / scale, (yBottom - yTop) / scale);
         applySizing();
 
         const renderContext = { canvasContext: context, viewport };
@@ -176,6 +188,7 @@ function PageRenderer({
         } catch (e) {}
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfFile, crop]);
 
   return (
@@ -203,6 +216,7 @@ function PageRenderer({
             </span>
           </div>
         )}
+        {children}
       </div>
     </div>
   );
@@ -233,13 +247,29 @@ export default function ContentPanel({
   const panelRef = useRef<HTMLDivElement>(null);
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
 
+  const [isDrawMode, setIsDrawMode] = useState(false);
+  const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | 'text'>('pen');
+  const [drawColor, setDrawColor] = useState(DRAW_COLORS[0]);
+  const [drawWidth, setDrawWidth] = useState(DRAW_WIDTHS[0]);
+  const [nativeSizeByPage, setNativeSizeByPage] = useState<
+  Record<number, { width: number; height: number }>
+>({});
+
   const isCanvasMode = !!(pdfFile && activeSection?.crops && activeSection.crops.length > 0);
   const isCanvasModeRef = useRef(isCanvasMode);
   isCanvasModeRef.current = isCanvasMode;
 
-  // Desktop ctrl+scroll zoom -- only handles TEXT-mode content now.
-  // Canvas mode's wheel zoom is handled natively by TransformWrapper below,
-  // so this bails out early there to avoid double-handling the same event.
+  const pageNums = activeSection?.crops?.map((c) => c.pageNum) ?? [];
+  const {
+    itemsByPage,
+    addItem: addAnnotationItem,
+    removeItem: removeAnnotationItem,
+    undo: undoAnnotation,
+    redo: redoAnnotation,
+    canUndo,
+    canRedo,
+  } = useAnnotations(activeBookId, pageNums);
+
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
@@ -302,9 +332,6 @@ export default function ContentPanel({
     return () => observer.disconnect();
   }, [activeSection?.id, isFocusMode]);
 
-  // Whenever the section changes, reset the pan/zoom library's own
-  // transform state so a new page doesn't inherit the previous one's
-  // zoom/pan position.
   useEffect(() => {
     transformRef.current?.resetTransform(0);
     setZoomLevel(1);
@@ -382,6 +409,17 @@ export default function ContentPanel({
             Visual Section
           </span>
         )}
+        {isCanvasMode && !isFocusMode && (
+          <button
+            onClick={() => setIsDrawMode((v) => !v)}
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${
+              isDrawMode ? themeClasses.active : themeClasses.hover
+            }`}
+            title="Draw on page"
+          >
+            ✏️
+          </button>
+        )}
         {!isFocusMode && (
           <button
             onClick={() => setIsAskAIOpen((v) => !v)}
@@ -426,15 +464,18 @@ export default function ContentPanel({
       >
         {isCanvasMode ? (
           <TransformWrapper
-          ref={transformRef}
-          initialScale={1}
-          minScale={MIN_ZOOM}
-          maxScale={MAX_ZOOM}
-          limitToBounds={false}
-          centerOnInit
-          doubleClick={{ disabled: true }}
-          onTransform={(_, state) => setZoomLevel(state.scale)}
-        >
+            ref={transformRef}
+            initialScale={1}
+            minScale={MIN_ZOOM}
+            maxScale={MAX_ZOOM}
+            limitToBounds={false}
+            centerOnInit
+            doubleClick={{ disabled: true }}
+            panning={{ disabled: isDrawMode }}
+            pinch={{ disabled: isDrawMode }}
+            wheel={{ disabled: isDrawMode }}
+            onTransform={(_, state) => setZoomLevel(state.scale)}
+          >
             <TransformComponent
               wrapperStyle={{ width: '100%', height: '100%' }}
               contentStyle={{
@@ -455,7 +496,24 @@ export default function ContentPanel({
                     focusMode={isFocusMode}
                     containerWidth={contentWidth}
                     containerHeight={contentHeight}
-                  />
+                    onNativeSizeReady={(w, h) =>
+                      setNativeSizeByPage((prev: any) => ({ ...prev, [crop.pageNum]: { width: w, height: h } }))
+                    }
+                  >
+                    {nativeSizeByPage[crop.pageNum] && (
+                      <AnnotationLayer
+                        items={itemsByPage[crop.pageNum] ?? []}
+                        nativeWidth={nativeSizeByPage[crop.pageNum].width}
+                        nativeHeight={nativeSizeByPage[crop.pageNum].height}
+                        tool={drawTool}
+                        color={drawColor}
+                        strokeWidth={drawWidth}
+                        isActive={isDrawMode}
+                        onAddItem={(item: StoredAnnotationItem) => addAnnotationItem(crop.pageNum, item)}
+                        onRemoveItem={(item: StoredAnnotationItem) => removeAnnotationItem(crop.pageNum, item)}
+                      />
+                    )}
+                  </PageRenderer>
                 ))}
               </div>
             </TransformComponent>
@@ -479,6 +537,80 @@ export default function ContentPanel({
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {isDrawMode && isCanvasMode && (
+          <div
+            className={`absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-2 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg z-20 flex-wrap justify-center max-w-[95%]`}
+          >
+            <button
+              onClick={() => setDrawTool('pen')}
+              className={`w-8 h-8 rounded-full flex items-center justify-center ${drawTool === 'pen' ? themeClasses.active : themeClasses.hover}`}
+              title="Pen"
+            >
+              ✏️
+            </button>
+            <button
+              onClick={() => setDrawTool('eraser')}
+              className={`w-8 h-8 rounded-full flex items-center justify-center ${drawTool === 'eraser' ? themeClasses.active : themeClasses.hover}`}
+              title="Eraser"
+            >
+              🧽
+            </button>
+            <button
+              onClick={() => setDrawTool('text')}
+              className={`w-8 h-8 rounded-full flex items-center justify-center ${drawTool === 'text' ? themeClasses.active : themeClasses.hover}`}
+              title="Text"
+            >
+              🔤
+            </button>
+            <div className="w-px h-5 bg-current opacity-20 mx-1" />
+            {DRAW_COLORS.map((c) => (
+              <button
+                key={c}
+                onClick={() => setDrawColor(c)}
+                className={`w-6 h-6 rounded-full border-2 ${drawColor === c ? 'border-current' : 'border-transparent'}`}
+                style={{ backgroundColor: c }}
+                title="Color"
+              />
+            ))}
+            <div className="w-px h-5 bg-current opacity-20 mx-1" />
+            {DRAW_WIDTHS.map((w) => (
+              <button
+                key={w}
+                onClick={() => setDrawWidth(w)}
+                className={`w-8 h-8 rounded-full flex items-center justify-center ${drawWidth === w ? themeClasses.active : themeClasses.hover}`}
+                title={`Width ${w}`}
+              >
+                <span
+                  style={{
+                    width: w + 2,
+                    height: w + 2,
+                    borderRadius: '50%',
+                    backgroundColor: 'currentColor',
+                    display: 'inline-block',
+                  }}
+                />
+              </button>
+            ))}
+            <div className="w-px h-5 bg-current opacity-20 mx-1" />
+            <button
+              onClick={undoAnnotation}
+              disabled={!canUndo}
+              className={`w-8 h-8 rounded-full flex items-center justify-center ${canUndo ? themeClasses.hover : 'opacity-30 cursor-not-allowed'}`}
+              title="Undo"
+            >
+              ↶
+            </button>
+            <button
+              onClick={redoAnnotation}
+              disabled={!canRedo}
+              className={`w-8 h-8 rounded-full flex items-center justify-center ${canRedo ? themeClasses.hover : 'opacity-30 cursor-not-allowed'}`}
+              title="Redo"
+            >
+              ↷
+            </button>
           </div>
         )}
       </div>
@@ -522,7 +654,7 @@ export default function ContentPanel({
           className={`w-9 h-9 md:w-7 md:h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`}
           title="Zoom out"
         >
-          
+          −
         </button>
         <button
           onClick={resetZoom}
