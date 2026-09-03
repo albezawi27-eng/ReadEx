@@ -23,10 +23,16 @@ function normalizeLatexDelimiters(text: string): string {
 }
 
 interface FileRef {
-  bookId: string;
   uri: string;
   mimeType: string;
 }
+
+// Module-level, not component state -- survives regardless of whether any
+// particular AskAI instance mounts/unmounts (e.g. closing and reopening
+// the panel), for as long as the page stays loaded. A useRef here would
+// only survive while the same instance stayed mounted, which turned out
+// not to hold across a close-then-reopen.
+const sessionFileRefCache = new Map<string, FileRef>();
 
 export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
   const { theme } = useTheme();
@@ -43,11 +49,6 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
   const [error, setError] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  // Session-only cache: the uploaded file's reference is intentionally NOT
-  // persisted to IndexedDB, since Gemini auto-deletes uploads after 48
-  // hours -- reopening a book later just re-uploads once, avoiding any
-  // stale-reference bugs entirely.
-  const fileRefCacheRef = useRef<FileRef | null>(null);
 
   useEffect(() => {
     getSetting('geminiApiKey').then((key) => {
@@ -87,12 +88,12 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
     setMessages((prev) => [...prev, userMessage]);
 
     try {
-      let fileRef = fileRefCacheRef.current;
-      if (!fileRef || fileRef.bookId !== bookId) {
+      let fileRef = sessionFileRefCache.get(bookId);
+      if (!fileRef) {
         setIsUploading(true);
         const uploaded = await uploadPdfToGemini(pdfFile, apiKey);
-        fileRef = { bookId, uri: uploaded.uri, mimeType: uploaded.mimeType };
-        fileRefCacheRef.current = fileRef;
+        fileRef = { uri: uploaded.uri, mimeType: uploaded.mimeType };
+        sessionFileRefCache.set(bookId, fileRef);
         setIsUploading(false);
       }
 
@@ -112,12 +113,6 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong asking Gemini.';
       setError(msg);
-      // If the upload step itself is what's blocked (e.g. a CORS wall),
-      // clear the cache so the next attempt retries cleanly instead of
-      // reusing a reference that never actually succeeded.
-      if (fileRefCacheRef.current?.bookId === bookId && !fileRefCacheRef.current.uri) {
-        fileRefCacheRef.current = null;
-      }
     } finally {
       setIsUploading(false);
       setIsAsking(false);
