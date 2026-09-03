@@ -27,12 +27,31 @@ interface FileRef {
   mimeType: string;
 }
 
-// Module-level, not component state -- survives regardless of whether any
-// particular AskAI instance mounts/unmounts (e.g. closing and reopening
-// the panel), for as long as the page stays loaded. A useRef here would
-// only survive while the same instance stayed mounted, which turned out
-// not to hold across a close-then-reopen.
+type PendingStatus = 'idle' | 'uploading' | 'asking';
+
+// All module-level, not component state -- survives regardless of whether
+// any particular AskAI instance is mounted, so closing/reopening the panel
+// mid-request no longer loses track of what's happening.
 const sessionFileRefCache = new Map<string, FileRef>();
+const pendingStatusByBook = new Map<string, PendingStatus>();
+const listenersByBook = new Map<string, Set<() => void>>();
+
+function getPendingStatus(bookId: string): PendingStatus {
+  return pendingStatusByBook.get(bookId) ?? 'idle';
+}
+
+function setPendingStatus(bookId: string, status: PendingStatus) {
+  pendingStatusByBook.set(bookId, status);
+  listenersByBook.get(bookId)?.forEach((fn) => fn());
+}
+
+function subscribeToBook(bookId: string, listener: () => void): () => void {
+  if (!listenersByBook.has(bookId)) listenersByBook.set(bookId, new Set());
+  listenersByBook.get(bookId)!.add(listener);
+  return () => {
+    listenersByBook.get(bookId)?.delete(listener);
+  };
+}
 
 export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
   const { theme } = useTheme();
@@ -43,9 +62,8 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
   const [isEditingKey, setIsEditingKey] = useState(false);
 
   const [messages, setMessages] = useState<StoredChatMessage[]>([]);
+  const [pendingStatus, setLocalPendingStatus] = useState<PendingStatus>('idle');
   const [questionInput, setQuestionInput] = useState('');
-  const [isUploading, setIsUploading] = useState(false);
-  const [isAsking, setIsAsking] = useState(false);
   const [error, setError] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -57,11 +75,33 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
     });
   }, []);
 
+  // Loads messages for this book, and stays subscribed to any in-flight
+  // request for it -- covers the case where a request was started before
+  // this instance mounted (e.g. the panel was closed and just reopened)
+  // and finishes while we're watching, or already finished before we did.
   useEffect(() => {
-    if (!bookId) return;
-    getChat(bookId).then((chat) => {
-      setMessages(chat?.messages ?? []);
-    });
+    if (!bookId) {
+      setMessages([]);
+      setLocalPendingStatus('idle');
+      return;
+    }
+
+    let cancelled = false;
+
+    const reload = () => {
+      getChat(bookId).then((chat) => {
+        if (!cancelled) setMessages(chat?.messages ?? []);
+      });
+      setLocalPendingStatus(getPendingStatus(bookId));
+    };
+
+    reload();
+    const unsubscribe = subscribeToBook(bookId, reload);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [bookId]);
 
   useEffect(() => {
@@ -80,24 +120,30 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
   const handleAsk = async () => {
     const question = questionInput.trim();
     if (!question || !apiKey || !pdfFile || !bookId) return;
+    if (getPendingStatus(bookId) !== 'idle') return;
 
     setError('');
     setQuestionInput('');
-    const historyBeforeThisTurn = messages;
-    const userMessage: StoredChatMessage = { role: 'user', text: question };
-    setMessages((prev) => [...prev, userMessage]);
 
     try {
+      // Persist the question immediately, before the network round trip --
+      // survives even if the panel gets closed right after this.
+      const existingChat = await getChat(bookId);
+      const historyBeforeThisTurn = existingChat?.messages ?? [];
+      const userMessage: StoredChatMessage = { role: 'user', text: question };
+      const withQuestion = [...historyBeforeThisTurn, userMessage];
+      await saveChat({ bookId, messages: withQuestion });
+      setMessages(withQuestion);
+
       let fileRef = sessionFileRefCache.get(bookId);
       if (!fileRef) {
-        setIsUploading(true);
+        setPendingStatus(bookId, 'uploading');
         const uploaded = await uploadPdfToGemini(pdfFile, apiKey);
         fileRef = { uri: uploaded.uri, mimeType: uploaded.mimeType };
         sessionFileRefCache.set(bookId, fileRef);
-        setIsUploading(false);
       }
 
-      setIsAsking(true);
+      setPendingStatus(bookId, 'asking');
       const answerText = await askGeminiAboutBook({
         apiKey,
         question,
@@ -107,19 +153,18 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
       });
 
       const modelMessage: StoredChatMessage = { role: 'model', text: answerText };
-      const finalMessages = [...historyBeforeThisTurn, userMessage, modelMessage];
+      const finalMessages = [...withQuestion, modelMessage];
+      await saveChat({ bookId, messages: finalMessages });
       setMessages(finalMessages);
-      saveChat({ bookId, messages: finalMessages });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong asking Gemini.';
       setError(msg);
     } finally {
-      setIsUploading(false);
-      setIsAsking(false);
+      setPendingStatus(bookId, 'idle');
     }
   };
 
-  const isBusy = isUploading || isAsking;
+  const isBusy = pendingStatus !== 'idle';
 
   return (
     <div
@@ -168,7 +213,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
       ) : (
         <>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {messages.length === 0 && (
+            {messages.length === 0 && !isBusy && (
               <p className="text-sm opacity-60">
                 Ask anything about this book -- Gemini reads the full PDF with your first question.
               </p>
@@ -194,7 +239,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
             ))}
             {isBusy && (
               <div className="text-sm opacity-60 italic">
-                {isUploading ? 'Uploading PDF (first question only)...' : 'Thinking...'}
+                {pendingStatus === 'uploading' ? 'Uploading PDF (first question only)...' : 'Thinking...'}
               </div>
             )}
             {error && <div className="text-sm text-red-500">{error}</div>}
