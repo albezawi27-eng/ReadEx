@@ -106,23 +106,28 @@ export async function askGeminiAboutBookStream(params: {
   const decoder = new TextDecoder();
   let buffer = '';
   let fullText = '';
+  let rawChunksSeen = 0;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    // SSE events are separated by a blank line; the last split piece may
-    // be a partial event still arriving, so keep it in the buffer.
+    // Normalize line endings first -- some servers send \r\n, which would
+    // otherwise leave a stray \r prefixed onto every line and silently
+    // break the startsWith('data:') check below on every single chunk.
+    const decoded = decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+    buffer += decoded;
+
     const events = buffer.split('\n\n');
     buffer = events.pop() ?? '';
 
     for (const event of events) {
-      const dataLine = event.split('\n').find((line) => line.startsWith('data:'));
+      const dataLine = event.split('\n').find((line) => line.trim().startsWith('data:'));
       if (!dataLine) continue;
-      const jsonStr = dataLine.slice(5).trim();
-      if (!jsonStr) continue;
+      const jsonStr = dataLine.slice(dataLine.indexOf(':') + 1).trim();
+      if (!jsonStr || jsonStr === '[DONE]') continue;
 
+      rawChunksSeen++;
       try {
         const parsed = JSON.parse(jsonStr);
         const chunkText = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -130,11 +135,19 @@ export async function askGeminiAboutBookStream(params: {
           fullText += chunkText;
           onChunk(fullText);
         }
-      } catch {
-        // A stream boundary can occasionally split mid-JSON -- skip a
-        // malformed fragment rather than aborting the whole response.
+      } catch (parseErr) {
+        console.warn('Gemini stream: failed to parse chunk', jsonStr, parseErr);
       }
     }
+  }
+
+  if (fullText.trim() === '') {
+    console.warn(`Gemini stream ended with no text extracted. Raw data lines seen: ${rawChunksSeen}.`);
+    throw new Error(
+      rawChunksSeen === 0
+        ? 'Gemini returned no data at all -- this may be a network or CORS issue.'
+        : 'Gemini sent data but no readable text was found in it -- the response format may have changed. Check the browser console for details.'
+    );
   }
 
   return fullText;
