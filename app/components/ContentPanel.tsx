@@ -4,8 +4,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { TransformWrapper, TransformComponent, ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { PageCrop } from '@/app/utils/pdfParser';
-import { StoredAnnotationItem } from '@/app/utils/db';
+import { StoredAnnotationItem, getAllAnnotationsForBook } from '@/app/utils/db';
 import { useAnnotations } from '@/app/hooks/useAnnotations';
+import { exportAnnotatedPdf, downloadBlob } from '@/app/utils/pdfExport';
 import AnnotationLayer from '@/app/components/AnnotationLayer';
 import AskAI from '@/app/components/AskAI';
 
@@ -39,6 +40,12 @@ const FOCUS_MODE_MAX_SCALE = 3;
 const DRAW_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#111827'];
 const DRAW_WIDTHS = [2, 4, 7];
 
+interface PageGeometry {
+  width: number;
+  height: number;
+  offset: number;
+}
+
 function PageRenderer({
   pdfFile,
   crop,
@@ -46,7 +53,7 @@ function PageRenderer({
   focusMode,
   containerWidth,
   containerHeight,
-  onNativeSizeReady,
+  onGeometryReady,
   children,
 }: {
   pdfFile: File;
@@ -55,7 +62,7 @@ function PageRenderer({
   focusMode: boolean;
   containerWidth: number | null;
   containerHeight: number | null;
-  onNativeSizeReady?: (width: number, height: number) => void;
+  onGeometryReady?: (geom: PageGeometry) => void;
   children?: React.ReactNode;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -160,7 +167,11 @@ function PageRenderer({
           yBottom,
         };
 
-        onNativeSizeReady?.(viewport.width / scale, (yBottom - yTop) / scale);
+        onGeometryReady?.({
+          width: viewport.width / scale,
+          height: (yBottom - yTop) / scale,
+          offset: yTop / scale,
+        });
         applySizing();
 
         const renderContext = { canvasContext: context, viewport };
@@ -251,9 +262,14 @@ export default function ContentPanel({
   const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | 'text'>('pen');
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState(DRAW_WIDTHS[0]);
-  const [nativeSizeByPage, setNativeSizeByPage] = useState<
-  Record<number, { width: number; height: number }>
->({});
+  const [geometryByPage, setGeometryByPage] = useState<Record<number, PageGeometry>>({});
+  const [isExporting, setIsExporting] = useState(false);
+
+  const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
+  const toolbarDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
+    null
+  );
+  const toolbarRef = useRef<HTMLDivElement>(null);
 
   const isCanvasMode = !!(pdfFile && activeSection?.crops && activeSection.crops.length > 0);
   const isCanvasModeRef = useRef(isCanvasMode);
@@ -369,6 +385,51 @@ export default function ContentPanel({
     }
   };
 
+  const handleExport = async () => {
+    if (!pdfFile || !activeBookId) return;
+    setIsExporting(true);
+    try {
+      const allAnnotations = await getAllAnnotationsForBook(activeBookId);
+      const blob = await exportAnnotatedPdf(pdfFile, allAnnotations);
+      const baseName = pdfFile.name.replace(/\.pdf$/i, '');
+      downloadBlob(blob, `${baseName}-annotated.pdf`);
+    } catch (err) {
+      console.error('Export failed:', err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Drag only starts from the grip handle -- everything else in the
+  // toolbar keeps clicking normally instead of fighting a whole-bar drag.
+  const handleToolbarDragStart = (e: React.PointerEvent) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const containerRect = contentAreaRef.current?.getBoundingClientRect();
+    const barRect = toolbarRef.current?.getBoundingClientRect();
+    const origX = toolbarPos?.x ?? (barRect && containerRect ? barRect.left - containerRect.left : 0);
+    const origY = toolbarPos?.y ?? (barRect && containerRect ? barRect.top - containerRect.top : 16);
+    toolbarDragRef.current = { startX: e.clientX, startY: e.clientY, origX, origY };
+  };
+
+  const handleToolbarDragMove = (e: React.PointerEvent) => {
+    if (!toolbarDragRef.current || !contentAreaRef.current || !toolbarRef.current) return;
+    const dx = e.clientX - toolbarDragRef.current.startX;
+    const dy = e.clientY - toolbarDragRef.current.startY;
+    const containerRect = contentAreaRef.current.getBoundingClientRect();
+    const barRect = toolbarRef.current.getBoundingClientRect();
+
+    const maxX = containerRect.width - barRect.width;
+    const maxY = containerRect.height - barRect.height;
+    const nextX = Math.min(Math.max(0, toolbarDragRef.current.origX + dx), Math.max(0, maxX));
+    const nextY = Math.min(Math.max(0, toolbarDragRef.current.origY + dy), Math.max(0, maxY));
+
+    setToolbarPos({ x: nextX, y: nextY });
+  };
+
+  const handleToolbarDragEnd = () => {
+    toolbarDragRef.current = null;
+  };
+
   const rootVisibilityClass = `${showOnMobile ? 'flex' : 'hidden'} md:flex`;
 
   if (!activeSection) {
@@ -408,6 +469,16 @@ export default function ContentPanel({
           <span className="hidden md:inline-block text-xs opacity-50 px-3 py-1 border border-current rounded-full uppercase tracking-wider font-semibold shrink-0">
             Visual Section
           </span>
+        )}
+        {isCanvasMode && !isFocusMode && (
+          <button
+            onClick={handleExport}
+            disabled={isExporting}
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
+            title="Export annotated PDF"
+          >
+            {isExporting ? '…' : '⬇️'}
+          </button>
         )}
         {isCanvasMode && !isFocusMode && (
           <button
@@ -496,15 +567,16 @@ export default function ContentPanel({
                     focusMode={isFocusMode}
                     containerWidth={contentWidth}
                     containerHeight={contentHeight}
-                    onNativeSizeReady={(w, h) =>
-                      setNativeSizeByPage((prev: any) => ({ ...prev, [crop.pageNum]: { width: w, height: h } }))
+                    onGeometryReady={(geom) =>
+                      setGeometryByPage((prev) => ({ ...prev, [crop.pageNum]: geom }))
                     }
                   >
-                    {nativeSizeByPage[crop.pageNum] && (
+                    {geometryByPage[crop.pageNum] && (
                       <AnnotationLayer
                         items={itemsByPage[crop.pageNum] ?? []}
-                        nativeWidth={nativeSizeByPage[crop.pageNum].width}
-                        nativeHeight={nativeSizeByPage[crop.pageNum].height}
+                        nativeWidth={geometryByPage[crop.pageNum].width}
+                        nativeHeight={geometryByPage[crop.pageNum].height}
+                        pageYOffset={geometryByPage[crop.pageNum].offset}
                         tool={drawTool}
                         color={drawColor}
                         strokeWidth={drawWidth}
@@ -542,8 +614,26 @@ export default function ContentPanel({
 
         {isDrawMode && isCanvasMode && (
           <div
-            className={`absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-2 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg z-20 flex-wrap justify-center max-w-[95%]`}
+            ref={toolbarRef}
+            style={
+              toolbarPos
+                ? { position: 'absolute', left: toolbarPos.x, top: toolbarPos.y }
+                : { position: 'absolute', top: '1rem', left: '50%', transform: 'translateX(-50%)' }
+            }
+            className={`flex items-center gap-1 px-2 py-2 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg z-20 flex-wrap justify-center max-w-[95%]`}
           >
+            <button
+              onPointerDown={handleToolbarDragStart}
+              onPointerMove={handleToolbarDragMove}
+              onPointerUp={handleToolbarDragEnd}
+              onPointerCancel={handleToolbarDragEnd}
+              style={{ touchAction: 'none', cursor: 'grab' }}
+              className={`w-6 h-8 rounded flex items-center justify-center opacity-50 ${themeClasses.hover}`}
+              title="Drag to move"
+            >
+              ⠿
+            </button>
+            <div className="w-px h-5 bg-current opacity-20 mx-1" />
             <button
               onClick={() => setDrawTool('pen')}
               className={`w-8 h-8 rounded-full flex items-center justify-center ${drawTool === 'pen' ? themeClasses.active : themeClasses.hover}`}

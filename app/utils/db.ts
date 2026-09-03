@@ -208,6 +208,18 @@ export async function savePageAnnotations(annotations: StoredPageAnnotations): P
   await db.put('annotations', annotations);
 }
 
+export async function getAllAnnotationsForBook(
+  bookId: string
+): Promise<Record<number, StoredAnnotationItem[]>> {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('annotations', 'bookId', bookId);
+  const result: Record<number, StoredAnnotationItem[]> = {};
+  for (const entry of all) {
+    result[entry.pageNum] = entry.items;
+  }
+  return result;
+}
+
 export function makeSectionKey(bookId: string, index: number, title: string): string {
   return `${bookId}::${index}::${title.slice(0, 40)}`;
 }

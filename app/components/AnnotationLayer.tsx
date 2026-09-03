@@ -7,6 +7,7 @@ interface AnnotationLayerProps {
   items: StoredAnnotationItem[];
   nativeWidth: number;
   nativeHeight: number;
+  pageYOffset: number;
   tool: 'pen' | 'eraser' | 'text';
   color: string;
   strokeWidth: number;
@@ -31,6 +32,7 @@ export default function AnnotationLayer({
   items,
   nativeWidth,
   nativeHeight,
+  pageYOffset,
   tool,
   color,
   strokeWidth,
@@ -47,6 +49,9 @@ export default function AnnotationLayer({
 
   const eraseThreshold = nativeWidth * ERASE_THRESHOLD_FRACTION;
 
+  // Points are full-page-relative (y=0 at the actual top of the PDF page),
+  // not crop-relative -- pageYOffset shifts the SVG's viewBox to show just
+  // this crop's slice of that page-sized coordinate space.
   const getViewBoxPoint = (clientX: number, clientY: number): { x: number; y: number } => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
@@ -54,7 +59,7 @@ export default function AnnotationLayer({
     if (rect.width === 0 || rect.height === 0) return { x: 0, y: 0 };
     const fracX = (clientX - rect.left) / rect.width;
     const fracY = (clientY - rect.top) / rect.height;
-    return { x: fracX * nativeWidth, y: fracY * nativeHeight };
+    return { x: fracX * nativeWidth, y: pageYOffset + fracY * nativeHeight };
   };
 
   const eraseNear = (point: { x: number; y: number }) => {
@@ -148,7 +153,7 @@ export default function AnnotationLayer({
     >
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${nativeWidth} ${nativeHeight}`}
+        viewBox={`0 ${pageYOffset} ${nativeWidth} ${nativeHeight}`}
         className="w-full h-full"
         style={{ cursor: isActive ? (tool === 'eraser' ? 'cell' : 'crosshair') : 'default' }}
         onPointerDown={handlePointerDown}
@@ -211,7 +216,7 @@ export default function AnnotationLayer({
           style={{
             position: 'absolute',
             left: `${(editingText.x / nativeWidth) * 100}%`,
-            top: `${(editingText.y / nativeHeight) * 100}%`,
+            top: `${((editingText.y - pageYOffset) / nativeHeight) * 100}%`,
             color,
             fontSize: '14px',
             minWidth: '120px',
