@@ -3,8 +3,8 @@
 import { StoredChatMessage } from '@/app/utils/db';
 
 const GEMINI_MODEL = 'gemini-3.5-flash';
-const GENERATE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const UPLOAD_BASE = 'https://generativelanguage.googleapis.com/upload/v1beta/files';
+const STREAM_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse`;
 
 export async function uploadPdfToGemini(
   file: File,
@@ -63,28 +63,32 @@ export async function uploadPdfToGemini(
   return { uri: uploadedUri, mimeType: uploadedMimeType };
 }
 
-export async function askGeminiAboutBook(params: {
+// Streams the answer as it generates rather than waiting for the full
+// response -- doesn't reduce total generation time (that's inherent to
+// how much context the model has to process) but starts showing text
+// within a second or two instead of one long silent wait. onChunk is
+// called with the accumulated text so far after every new piece arrives.
+export async function askGeminiAboutBookStream(params: {
   apiKey: string;
   question: string;
   history: StoredChatMessage[];
   fileUri: string;
   fileMimeType: string;
+  onChunk: (textSoFar: string) => void;
 }): Promise<string> {
-  const { apiKey, question, history, fileUri, fileMimeType } = params;
+  const { apiKey, question, history, fileUri, fileMimeType, onChunk } = params;
 
   const historyContents = history.map((msg) => ({
     role: msg.role,
     parts: [{ text: msg.text }],
   }));
 
-  // The file is referenced (cheap) rather than embedded (expensive) on
-  // every request -- only the upload step pays the full document cost.
   const newTurn = {
     role: 'user',
     parts: [{ fileData: { fileUri, mimeType: fileMimeType } }, { text: question }],
   };
 
-  const response = await fetch(GENERATE_URL, {
+  const response = await fetch(STREAM_URL, {
     method: 'POST',
     headers: {
       'x-goog-api-key': apiKey,
@@ -93,17 +97,45 @@ export async function askGeminiAboutBook(params: {
     body: JSON.stringify({ contents: [...historyContents, newTurn] }),
   });
 
-  if (!response.ok) {
+  if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => '');
     throw new Error(`Gemini request failed (${response.status}): ${errText}`);
   }
 
-  const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
 
-  if (typeof text !== 'string') {
-    throw new Error('Gemini returned a response but no answer text was found in it.');
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    // SSE events are separated by a blank line; the last split piece may
+    // be a partial event still arriving, so keep it in the buffer.
+    const events = buffer.split('\n\n');
+    buffer = events.pop() ?? '';
+
+    for (const event of events) {
+      const dataLine = event.split('\n').find((line) => line.startsWith('data:'));
+      if (!dataLine) continue;
+      const jsonStr = dataLine.slice(5).trim();
+      if (!jsonStr) continue;
+
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const chunkText = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (typeof chunkText === 'string') {
+          fullText += chunkText;
+          onChunk(fullText);
+        }
+      } catch {
+        // A stream boundary can occasionally split mid-JSON -- skip a
+        // malformed fragment rather than aborting the whole response.
+      }
+    }
   }
 
-  return text;
+  return fullText;
 }

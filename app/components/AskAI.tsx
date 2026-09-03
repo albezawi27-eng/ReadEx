@@ -8,7 +8,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { getSetting, setSetting, getChat, saveChat, StoredChatMessage } from '@/app/utils/db';
-import { uploadPdfToGemini, askGeminiAboutBook } from '@/app/utils/geminiClient';
+import { uploadPdfToGemini, askGeminiAboutBookStream } from '@/app/utils/geminiClient';
 
 interface AskAIProps {
   pdfFile: File | null;
@@ -29,20 +29,27 @@ interface FileRef {
 
 type PendingStatus = 'idle' | 'uploading' | 'asking';
 
-// All module-level, not component state -- survives regardless of whether
-// any particular AskAI instance is mounted, so closing/reopening the panel
-// mid-request no longer loses track of what's happening.
 const sessionFileRefCache = new Map<string, FileRef>();
 const pendingStatusByBook = new Map<string, PendingStatus>();
+const streamingTextByBook = new Map<string, string>();
 const listenersByBook = new Map<string, Set<() => void>>();
 
 function getPendingStatus(bookId: string): PendingStatus {
   return pendingStatusByBook.get(bookId) ?? 'idle';
 }
 
+function notify(bookId: string) {
+  listenersByBook.get(bookId)?.forEach((fn) => fn());
+}
+
 function setPendingStatus(bookId: string, status: PendingStatus) {
   pendingStatusByBook.set(bookId, status);
-  listenersByBook.get(bookId)?.forEach((fn) => fn());
+  notify(bookId);
+}
+
+function setStreamingText(bookId: string, text: string) {
+  streamingTextByBook.set(bookId, text);
+  notify(bookId);
 }
 
 function subscribeToBook(bookId: string, listener: () => void): () => void {
@@ -63,6 +70,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
 
   const [messages, setMessages] = useState<StoredChatMessage[]>([]);
   const [pendingStatus, setLocalPendingStatus] = useState<PendingStatus>('idle');
+  const [streamingText, setLocalStreamingText] = useState('');
   const [questionInput, setQuestionInput] = useState('');
   const [error, setError] = useState('');
 
@@ -75,14 +83,11 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
     });
   }, []);
 
-  // Loads messages for this book, and stays subscribed to any in-flight
-  // request for it -- covers the case where a request was started before
-  // this instance mounted (e.g. the panel was closed and just reopened)
-  // and finishes while we're watching, or already finished before we did.
   useEffect(() => {
     if (!bookId) {
       setMessages([]);
       setLocalPendingStatus('idle');
+      setLocalStreamingText('');
       return;
     }
 
@@ -93,6 +98,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
         if (!cancelled) setMessages(chat?.messages ?? []);
       });
       setLocalPendingStatus(getPendingStatus(bookId));
+      setLocalStreamingText(streamingTextByBook.get(bookId) ?? '');
     };
 
     reload();
@@ -106,7 +112,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, streamingText]);
 
   const handleSaveKey = async () => {
     const trimmed = keyInput.trim();
@@ -126,8 +132,6 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
     setQuestionInput('');
 
     try {
-      // Persist the question immediately, before the network round trip --
-      // survives even if the panel gets closed right after this.
       const existingChat = await getChat(bookId);
       const historyBeforeThisTurn = existingChat?.messages ?? [];
       const userMessage: StoredChatMessage = { role: 'user', text: question };
@@ -144,12 +148,15 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
       }
 
       setPendingStatus(bookId, 'asking');
-      const answerText = await askGeminiAboutBook({
+      setStreamingText(bookId, '');
+
+      const answerText = await askGeminiAboutBookStream({
         apiKey,
         question,
         history: historyBeforeThisTurn,
         fileUri: fileRef.uri,
         fileMimeType: fileRef.mimeType,
+        onChunk: (textSoFar) => setStreamingText(bookId, textSoFar),
       });
 
       const modelMessage: StoredChatMessage = { role: 'model', text: answerText };
@@ -161,6 +168,7 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
       setError(msg);
     } finally {
       setPendingStatus(bookId, 'idle');
+      setStreamingText(bookId, '');
     }
   };
 
@@ -237,11 +245,26 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
                 )}
               </div>
             ))}
-            {isBusy && (
-              <div className="text-sm opacity-60 italic">
-                {pendingStatus === 'uploading' ? 'Uploading PDF (first question only)...' : 'Thinking...'}
+
+            {pendingStatus === 'uploading' && (
+              <div className="text-sm opacity-60 italic">Uploading PDF (first question only)...</div>
+            )}
+
+            {pendingStatus === 'asking' && (
+              <div className={`text-sm p-3 rounded-lg ${themeClasses.hover}`}>
+                <div className="text-xs opacity-50 mb-1 uppercase tracking-wide">Gemini</div>
+                {streamingText ? (
+                  <div className="ai-markdown">
+                    <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                      {normalizeLatexDelimiters(streamingText)}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <span className="opacity-60 italic">Thinking...</span>
+                )}
               </div>
             )}
+
             {error && <div className="text-sm text-red-500">{error}</div>}
             <div ref={messagesEndRef} />
           </div>
