@@ -88,16 +88,36 @@ export async function askGeminiAboutBookStream(params: {
     parts: [{ fileData: { fileUri, mimeType: fileMimeType } }, { text: question }],
   };
 
-  const response = await fetch(STREAM_URL, {
-    method: 'POST',
-    headers: {
-      'x-goog-api-key': apiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ contents: [...historyContents, newTurn] }),
-  });
+  // Hard timeout so a genuine hang (network, proxy, or otherwise) surfaces
+  // as a visible error after 90s instead of spinning silently forever.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 90_000);
+
+  console.log('[Gemini] Sending request...');
+
+  let response: Response;
+  try {
+    response = await fetch(STREAM_URL, {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ contents: [...historyContents, newTurn] }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Gemini request timed out after 90 seconds with no response.');
+    }
+    throw err;
+  }
+
+  console.log('[Gemini] Response headers received, status:', response.status);
 
   if (!response.ok || !response.body) {
+    clearTimeout(timeoutId);
     const errText = await response.text().catch(() => '');
     throw new Error(`Gemini request failed (${response.status}): ${errText}`);
   }
@@ -107,46 +127,55 @@ export async function askGeminiAboutBookStream(params: {
   let buffer = '';
   let fullText = '';
   let rawChunksSeen = 0;
+  let readIterations = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      readIterations++;
 
-    // Normalize line endings first -- some servers send \r\n, which would
-    // otherwise leave a stray \r prefixed onto every line and silently
-    // break the startsWith('data:') check below on every single chunk.
-    const decoded = decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-    buffer += decoded;
+      if (done) {
+        console.log(`[Gemini] Stream closed by server after ${readIterations} reads.`);
+        break;
+      }
 
-    const events = buffer.split('\n\n');
-    buffer = events.pop() ?? '';
+      console.log(`[Gemini] Read #${readIterations}: ${value?.byteLength ?? 0} bytes`);
 
-    for (const event of events) {
-      const dataLine = event.split('\n').find((line) => line.trim().startsWith('data:'));
-      if (!dataLine) continue;
-      const jsonStr = dataLine.slice(dataLine.indexOf(':') + 1).trim();
-      if (!jsonStr || jsonStr === '[DONE]') continue;
+      const decoded = decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      buffer += decoded;
 
-      rawChunksSeen++;
-      try {
-        const parsed = JSON.parse(jsonStr);
-        const chunkText = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (typeof chunkText === 'string') {
-          fullText += chunkText;
-          onChunk(fullText);
+      const events = buffer.split('\n\n');
+      buffer = events.pop() ?? '';
+
+      for (const event of events) {
+        const dataLine = event.split('\n').find((line) => line.trim().startsWith('data:'));
+        if (!dataLine) continue;
+        const jsonStr = dataLine.slice(dataLine.indexOf(':') + 1).trim();
+        if (!jsonStr || jsonStr === '[DONE]') continue;
+
+        rawChunksSeen++;
+        try {
+          const parsed = JSON.parse(jsonStr);
+          const chunkText = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (typeof chunkText === 'string') {
+            fullText += chunkText;
+            onChunk(fullText);
+          }
+        } catch (parseErr) {
+          console.warn('[Gemini] Failed to parse chunk', jsonStr, parseErr);
         }
-      } catch (parseErr) {
-        console.warn('Gemini stream: failed to parse chunk', jsonStr, parseErr);
       }
     }
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (fullText.trim() === '') {
-    console.warn(`Gemini stream ended with no text extracted. Raw data lines seen: ${rawChunksSeen}.`);
+    console.warn(`[Gemini] Stream ended with no text extracted. Raw data lines seen: ${rawChunksSeen}.`);
     throw new Error(
       rawChunksSeen === 0
         ? 'Gemini returned no data at all -- this may be a network or CORS issue.'
-        : 'Gemini sent data but no readable text was found in it -- the response format may have changed. Check the browser console for details.'
+        : 'Gemini sent data but no readable text was found in it. Check the browser console for details.'
     );
   }
 
