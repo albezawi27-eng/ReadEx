@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { getAllBooks, getProgress, StoredBook } from '@/app/utils/db';
 import { exportLibrary, importLibrary } from '@/app/utils/backup';
-import { exportNotesAsFlashcards } from '@/app/utils/flashcards';
+import { exportNotesAsFlashcardPdf } from '@/app/utils/flashcards';
 import { downloadBlob } from '@/app/utils/pdfExport';
 
 interface LibraryEntry extends StoredBook {
@@ -140,12 +140,12 @@ export default function Library({
     setToolsBusy('flashcards');
     setToolsMessage('');
     try {
-      const blob = await exportNotesAsFlashcards();
-      downloadBlob(blob, 'readex-flashcards.txt');
-      setToolsMessage('Import into Anki via File > Import (check "Allow HTML in fields").');
+      const blob = await exportNotesAsFlashcardPdf();
+      downloadBlob(blob, 'readex-flashcards.pdf');
+      setToolsMessage('');
     } catch (err) {
       console.error('Flashcard export failed:', err);
-      setToolsMessage('Flashcard export failed -- check the console for details.');
+      setToolsMessage(err instanceof Error ? err.message : 'Flashcard export failed.');
     } finally {
       setToolsBusy(null);
     }
