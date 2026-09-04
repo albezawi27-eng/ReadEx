@@ -191,6 +191,31 @@ export async function saveChat(chat: StoredChat): Promise<void> {
   await db.put('aiChats', chat);
 }
 
+export async function getAllProgressRecords(): Promise<StoredProgress[]> {
+  const db = await getDB();
+  return db.getAll('progress');
+}
+
+export async function getAllNoteRecords(): Promise<StoredNote[]> {
+  const db = await getDB();
+  return db.getAll('notes');
+}
+
+export async function getAllAnnotationRecords(): Promise<StoredPageAnnotations[]> {
+  const db = await getDB();
+  return db.getAll('annotations');
+}
+
+export async function getAllChatRecords(): Promise<StoredChat[]> {
+  const db = await getDB();
+  return db.getAll('aiChats');
+}
+
+export async function getAllSettingRecords(): Promise<AppSetting[]> {
+  const db = await getDB();
+  return db.getAll('settings');
+}
+
 export function makePageAnnotationKey(bookId: string, pageNum: number): string {
   return `${bookId}::page::${pageNum}`;
 }

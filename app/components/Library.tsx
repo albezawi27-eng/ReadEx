@@ -3,6 +3,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { getAllBooks, getProgress, StoredBook } from '@/app/utils/db';
+import { exportLibrary, importLibrary } from '@/app/utils/backup';
+import { exportNotesAsFlashcards } from '@/app/utils/flashcards';
+import { downloadBlob } from '@/app/utils/pdfExport';
 
 interface LibraryEntry extends StoredBook {
   completedCount: number;
@@ -36,7 +39,11 @@ export default function Library({
   const [isLoading, setIsLoading] = useState(true);
   const [uploadError, setUploadError] = useState('');
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [toolsBusy, setToolsBusy] = useState<'export' | 'import' | 'flashcards' | null>(null);
+  const [toolsMessage, setToolsMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
+  const [localRefreshKey, setLocalRefreshKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +70,7 @@ export default function Library({
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, localRefreshKey]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -95,11 +102,60 @@ export default function Library({
     }
   };
 
+  const handleExportLibrary = async () => {
+    setToolsBusy('export');
+    setToolsMessage('');
+    try {
+      const blob = await exportLibrary();
+      const date = new Date().toISOString().split('T')[0];
+      downloadBlob(blob, `readex-backup-${date}.zip`);
+    } catch (err) {
+      console.error('Library export failed:', err);
+      setToolsMessage('Export failed -- check the console for details.');
+    } finally {
+      setToolsBusy(null);
+    }
+  };
+
+  const handleImportFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setToolsBusy('import');
+    setToolsMessage('');
+    try {
+      const result = await importLibrary(file);
+      setToolsMessage(`Imported ${result.booksImported} book(s).`);
+      setLocalRefreshKey((k) => k + 1);
+    } catch (err) {
+      console.error('Library import failed:', err);
+      setToolsMessage(err instanceof Error ? err.message : 'Import failed.');
+    } finally {
+      setToolsBusy(null);
+    }
+  };
+
+  const handleExportFlashcards = async () => {
+    setToolsBusy('flashcards');
+    setToolsMessage('');
+    try {
+      const blob = await exportNotesAsFlashcards();
+      downloadBlob(blob, 'readex-flashcards.txt');
+      setToolsMessage('Import into Anki via File > Import (check "Allow HTML in fields").');
+    } catch (err) {
+      console.error('Flashcard export failed:', err);
+      setToolsMessage('Flashcard export failed -- check the console for details.');
+    } finally {
+      setToolsBusy(null);
+    }
+  };
+
   return (
     <div className={`w-full h-screen ${themeClasses.bg} ${themeClasses.text} flex flex-col overflow-y-auto`}>
       <div className="max-w-4xl w-full mx-auto px-8 py-12">
-      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-10">
-       <h1 className="text-3xl sm:text-4xl font-bold">My Library</h1>
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-4">
+          <h1 className="text-3xl sm:text-4xl font-bold">My Library</h1>
           <label
             className={`px-5 py-3 rounded-lg font-medium cursor-pointer transition ${themeClasses.button} ${
               isProcessing ? 'opacity-60 pointer-events-none' : ''
@@ -116,6 +172,42 @@ export default function Library({
             {isProcessing ? '⏳ Processing...' : '📄 Upload New Book'}
           </label>
         </div>
+
+        <div className="flex flex-wrap items-center gap-2 mb-8">
+          <button
+            onClick={handleExportLibrary}
+            disabled={toolsBusy !== null}
+            className={`text-xs px-3 py-2 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
+            title="Download everything: books, progress, notes, annotations, AI chats"
+          >
+            {toolsBusy === 'export' ? '⏳ Exporting...' : '💾 Export Library'}
+          </button>
+          <button
+            onClick={() => backupInputRef.current?.click()}
+            disabled={toolsBusy !== null}
+            className={`text-xs px-3 py-2 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
+            title="Restore from a previously exported backup"
+          >
+            {toolsBusy === 'import' ? '⏳ Importing...' : '📥 Import Library'}
+          </button>
+          <input
+            ref={backupInputRef}
+            type="file"
+            accept=".zip"
+            className="hidden"
+            onChange={handleImportFileSelected}
+          />
+          <button
+            onClick={handleExportFlashcards}
+            disabled={toolsBusy !== null}
+            className={`text-xs px-3 py-2 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
+            title="Export all notes as Anki-importable flashcards"
+          >
+            {toolsBusy === 'flashcards' ? '⏳ Exporting...' : '🗂️ Export Flashcards'}
+          </button>
+        </div>
+
+        {toolsMessage && <div className="mb-6 text-sm opacity-70">{toolsMessage}</div>}
 
         {uploadError && (
           <div className="mb-6 p-3 bg-opacity-20 bg-red-500 rounded text-sm text-red-700 dark:text-red-300">
