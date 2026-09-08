@@ -20,6 +20,29 @@ interface LibraryProps {
   refreshKey: number;
 }
 
+const FEATURES = [
+  {
+    icon: '🧭',
+    title: 'Smart Navigation',
+    desc: 'Automatically finds chapters and sections from your PDF\u2019s headings.',
+  },
+  {
+    icon: '✏️',
+    title: 'Draw & Annotate',
+    desc: 'Mark up pages directly, with color, text, and full undo/redo.',
+  },
+  {
+    icon: '💬',
+    title: 'Ask AI',
+    desc: 'Chat with Gemini about the full document, right where you\u2019re reading.',
+  },
+  {
+    icon: '📤',
+    title: 'Export Anywhere',
+    desc: 'Download your annotated PDF or turn notes into flashcards.',
+  },
+];
+
 function progressColor(pct: number): string {
   if (pct >= 100) return 'bg-green-500';
   if (pct >= 33) return 'bg-amber-500';
@@ -44,6 +67,13 @@ export default function Library({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
   const [localRefreshKey, setLocalRefreshKey] = useState(0);
+
+  const heroGradient =
+    theme === 'dark'
+      ? 'bg-gradient-to-b from-[#20222a] via-[#1a1b1e] to-[#1a1b1e]'
+      : theme === 'colorful'
+        ? 'bg-gradient-to-b from-orange-100 via-orange-50 to-orange-50'
+        : 'bg-gradient-to-b from-blue-50 via-white to-white';
 
   useEffect(() => {
     let cancelled = false;
@@ -152,10 +182,20 @@ export default function Library({
   };
 
   return (
-    <div className={`w-full h-screen ${themeClasses.bg} ${themeClasses.text} flex flex-col overflow-y-auto`}>
-      <div className="max-w-4xl w-full mx-auto px-8 py-12">
+    <div className={`w-full h-screen ${heroGradient} ${themeClasses.text} flex flex-col overflow-y-auto`}>
+      <div className="max-w-4xl w-full mx-auto px-8 pt-14 pb-4">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="text-4xl leading-none">📖</span>
+          <h1 className="text-4xl font-extrabold tracking-tight">ReadEx</h1>
+        </div>
+        <p className="text-sm opacity-60 mb-10">
+          Read, annotate, and understand your PDFs \u2014 with AI built in.
+        </p>
+      </div>
+
+      <div className="max-w-4xl w-full mx-auto px-8 pb-12 flex-1">
         <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-4">
-          <h1 className="text-3xl sm:text-4xl font-bold">My Library</h1>
+          <h2 className="text-xl font-semibold opacity-80">My Library</h2>
           <label
             className={`px-5 py-3 rounded-lg font-medium cursor-pointer transition ${themeClasses.button} ${
               isProcessing ? 'opacity-60 pointer-events-none' : ''
@@ -201,7 +241,7 @@ export default function Library({
             onClick={handleExportFlashcards}
             disabled={toolsBusy !== null}
             className={`text-xs px-3 py-2 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
-            title="Export all notes as Anki-importable flashcards"
+            title="Export all notes as a flashcard PDF"
           >
             {toolsBusy === 'flashcards' ? '⏳ Exporting...' : '🗂️ Export Flashcards'}
           </button>
@@ -218,9 +258,23 @@ export default function Library({
         {isLoading ? (
           <p className="opacity-60">Loading your library...</p>
         ) : entries.length === 0 ? (
-          <div className="text-center py-20 opacity-60">
-            <p className="text-lg">No books yet.</p>
-            <p className="text-sm mt-2">Upload a PDF to get started.</p>
+          <div>
+            <div className="text-center py-12 opacity-70">
+              <p className="text-lg">No books yet.</p>
+              <p className="text-sm mt-2">Upload a PDF above to get started.</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+              {FEATURES.map((f) => (
+                <div
+                  key={f.title}
+                  className={`p-5 rounded-xl border ${themeClasses.border} border-opacity-20 ${themeClasses.sidebg}`}
+                >
+                  <div className="text-2xl mb-2">{f.icon}</div>
+                  <h3 className="font-semibold mb-1">{f.title}</h3>
+                  <p className="text-sm opacity-70">{f.desc}</p>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
