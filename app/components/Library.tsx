@@ -189,8 +189,9 @@ export default function Library({
           <h1 className="text-4xl font-extrabold tracking-tight">ReadEx</h1>
         </div>
         <p className="text-sm opacity-60 mb-10">
-        ReadEx organzes your study.
-        Read, annotate, take notes, save progress, and understand your PDFs with AI built in.
+        ReadEx Organizes Your Study.
+
+        Read, Annotate, Take Notes, Save Progress, and Understand Your PDFs With AI Built In.
         </p>
       </div>
 
