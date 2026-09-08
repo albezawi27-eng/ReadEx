@@ -246,9 +246,9 @@ export default function AskAI({ pdfFile, bookId, onClose }: AskAIProps) {
               </div>
             ))}
 
-            {pendingStatus === 'uploading' && (
-              <div className="text-sm opacity-60 italic">Uploading PDF (first question only)...</div>
-            )}
+{pendingStatus === 'uploading' && (
+  <div className="text-sm opacity-60 italic">Uploading PDF...</div>
+)}
 
             {pendingStatus === 'asking' && (
               <div className={`text-sm p-3 rounded-lg ${themeClasses.hover}`}>
