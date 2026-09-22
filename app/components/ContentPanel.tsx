@@ -9,7 +9,6 @@ import { useAnnotations } from '@/app/hooks/useAnnotations';
 import { exportAnnotatedPdf, downloadBlob } from '@/app/utils/pdfExport';
 import { useIsUnlocked } from '@/app/utils/licensing';
 import AnnotationLayer from '@/app/components/AnnotationLayer';
-import UnlockModal from '@/app/components/UnlockModal';
 import AskAI from '@/app/components/AskAI';
 
 interface Section {
@@ -819,9 +818,7 @@ export default function ContentPanel({
         </div>
       )}
 
-      {showUnlockModal && (
-        <UnlockModal onClose={() => setShowUnlockModal(false)} onUnlocked={() => setShowUnlockModal(false)} />
-      )}
+
 
       {isAskAIOpen && (
         <AskAI pdfFile={pdfFile ?? null} bookId={activeBookId} onClose={() => setIsAskAIOpen(false)} />
