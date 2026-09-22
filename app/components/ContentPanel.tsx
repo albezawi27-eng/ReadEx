@@ -291,7 +291,6 @@ export default function ContentPanel({
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
   const isUnlocked = useIsUnlocked();
-  const [showUnlockModal, setShowUnlockModal] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isAskAIOpen, setIsAskAIOpen] = useState(false);
@@ -511,27 +510,7 @@ export default function ContentPanel({
             Visual Section
           </span>
         )}
-        {isCanvasMode && !isFocusMode && (
-          <button
-            onClick={() => (isUnlocked ? handleExport() : setShowUnlockModal(true))}
-            disabled={isExporting}
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
-            title={isUnlocked ? 'Export annotated PDF' : 'Export annotated PDF (Pro)'}
-          >
-            {isExporting ? '…' : isUnlocked ? '⬇️' : '🔒'}
-          </button>
-        )}
-        {isCanvasMode && !isFocusMode && (
-          <button
-            onClick={() => (isUnlocked ? setIsDrawMode((v) => !v) : setShowUnlockModal(true))}
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${
-              isDrawMode ? themeClasses.active : themeClasses.hover
-            }`}
-            title={isUnlocked ? 'Draw on page' : 'Draw on page (Pro)'}
-          >
-            {isUnlocked ? '✏️' : '🔒'}
-          </button>
-        )}
+       
         {!isFocusMode && (
           <button
             onClick={() => setIsAskAIOpen((v) => !v)}
