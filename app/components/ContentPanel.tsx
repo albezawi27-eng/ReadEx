@@ -7,7 +7,6 @@ import { PageCrop } from '@/app/utils/pdfParser';
 import { StoredAnnotationItem, getAllAnnotationsForBook } from '@/app/utils/db';
 import { useAnnotations } from '@/app/hooks/useAnnotations';
 import { exportAnnotatedPdf, downloadBlob } from '@/app/utils/pdfExport';
-import { useIsUnlocked } from '@/app/utils/licensing';
 import AnnotationLayer from '@/app/components/AnnotationLayer';
 import AskAI from '@/app/components/AskAI';
 
@@ -290,7 +289,6 @@ export default function ContentPanel({
 }: ContentPanelProps) {
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
-  const isUnlocked = useIsUnlocked();
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isAskAIOpen, setIsAskAIOpen] = useState(false);
@@ -305,8 +303,6 @@ export default function ContentPanel({
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState(DRAW_WIDTHS[0]);
   const [geometryByPage, setGeometryByPage] = useState<Record<number, PageGeometry>>({});
-  const [isExporting, setIsExporting] = useState(false);
-
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
   const toolbarDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
     null
@@ -804,4 +800,8 @@ export default function ContentPanel({
       )}
     </div>
   );
+}
+
+function setIsExporting(arg0: boolean) {
+  throw new Error('Function not implemented.');
 }
