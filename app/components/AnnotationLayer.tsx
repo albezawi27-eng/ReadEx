@@ -149,7 +149,11 @@ export default function AnnotationLayer({
   return (
     <div
       className="absolute inset-0"
-      style={{ pointerEvents: isActive ? 'auto' : 'none', touchAction: isActive ? 'none' : undefined }}
+      style={{
+        pointerEvents: isActive ? 'auto' : 'none',
+        touchAction: isActive ? 'none' : undefined,
+        zIndex: 2,
+      }}
     >
       <svg
         ref={svgRef}

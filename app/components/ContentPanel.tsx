@@ -7,7 +7,9 @@ import { PageCrop } from '@/app/utils/pdfParser';
 import { StoredAnnotationItem, getAllAnnotationsForBook } from '@/app/utils/db';
 import { useAnnotations } from '@/app/hooks/useAnnotations';
 import { exportAnnotatedPdf, downloadBlob } from '@/app/utils/pdfExport';
+import { useIsUnlocked } from '@/app/utils/licensing';
 import AnnotationLayer from '@/app/components/AnnotationLayer';
+import UnlockModal from '@/app/components/UnlockModal';
 import AskAI from '@/app/components/AskAI';
 
 interface Section {
@@ -67,6 +69,7 @@ function PageRenderer({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const [isRendering, setIsRendering] = useState(false);
   const rawDimsRef = useRef<{
     viewportWidth: number;
@@ -79,12 +82,15 @@ function PageRenderer({
   const applySizing = () => {
     const canvas = canvasRef.current;
     const wrapper = wrapperRef.current;
+    const textLayerEl = textLayerRef.current;
     const dims = rawDimsRef.current;
     if (!canvas || !wrapper || !dims) return;
 
     const { viewportWidth, viewportHeight, scale, yTop, yBottom } = dims;
     const nativeCssWidth = viewportWidth / scale;
     const nativeCssCropHeight = (yBottom - yTop) / scale;
+    const nativeFullPageHeight = viewportHeight / scale;
+    const nativeCropTop = yTop / scale;
 
     const availableWidth = containerWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
     const widthScale = availableWidth / nativeCssWidth;
@@ -97,10 +103,10 @@ function PageRenderer({
       effectiveScale = Math.min(PAGE_DISPLAY_SCALE, widthScale);
     }
 
-    const cssTop = (yTop / scale) * effectiveScale;
+    const cssTop = nativeCropTop * effectiveScale;
     const cssHeight = nativeCssCropHeight * effectiveScale;
     const cssWidth = nativeCssWidth * effectiveScale;
-    const cssFullHeight = (viewportHeight / scale) * effectiveScale;
+    const cssFullHeight = nativeFullPageHeight * effectiveScale;
 
     wrapper.style.height = `${cssHeight}px`;
     wrapper.style.width = `${cssWidth}px`;
@@ -114,6 +120,21 @@ function PageRenderer({
     canvas.style.top = `-${cssTop}px`;
     canvas.style.left = '50%';
     canvas.style.transform = 'translateX(-50%)';
+
+    if (textLayerEl) {
+      // Built once at native (scale=1) size; scaled with a single CSS
+      // transform rather than re-running pdf.js's text layout on every
+      // resize -- same "render once, resize via CSS" idea as the canvas.
+      // top uses the already-scaled cssTop since transform-origin is
+      // top-left, so the crop window still lines up with the canvas.
+      textLayerEl.style.position = 'absolute';
+      textLayerEl.style.left = '0';
+      textLayerEl.style.top = `${-cssTop}px`;
+      textLayerEl.style.width = `${nativeCssWidth}px`;
+      textLayerEl.style.height = `${nativeFullPageHeight}px`;
+      textLayerEl.style.transformOrigin = 'top left';
+      textLayerEl.style.transform = `scale(${effectiveScale})`;
+    }
   };
 
   useEffect(() => {
@@ -125,6 +146,8 @@ function PageRenderer({
     let isCancelled = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let renderTask: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let textLayerInstance: any = null;
 
     const renderPage = async () => {
       if (!pdfFile || !crop || !canvasRef.current || !wrapperRef.current) return;
@@ -180,6 +203,23 @@ function PageRenderer({
           renderTask = page.render(renderContext);
           await renderTask.promise;
         }
+
+        // Selectable text layer -- built from the same already-loaded
+        // page, so this doesn't reload or reparse the PDF a second time.
+        if (!isCancelled && textLayerRef.current) {
+          textLayerRef.current.innerHTML = '';
+          const nativeViewport = page.getViewport({ scale: 1 });
+          const textContent = await page.getTextContent();
+          if (!isCancelled && textLayerRef.current) {
+            textLayerInstance = new pdfjsLib.TextLayer({
+              textContentSource: textContent,
+              container: textLayerRef.current,
+              viewport: nativeViewport,
+            });
+            await textLayerInstance.render();
+            applySizing();
+          }
+        }
       } catch (e: any) {
         if (e?.name !== 'RenderingCancelledException') {
           console.error('Page rendering error:', e);
@@ -198,6 +238,7 @@ function PageRenderer({
           renderTask.cancel();
         } catch (e) {}
       }
+      textLayerInstance?.cancel?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfFile, crop]);
@@ -220,6 +261,7 @@ function PageRenderer({
           style={{ filter: theme === 'dark' && !focusMode ? 'brightness(0.92)' : 'none' }}
           className={isRendering ? 'opacity-30' : 'opacity-100'}
         />
+        <div ref={textLayerRef} className="textLayer" />
         {isRendering && (
           <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-5">
             <span className="px-3 py-1 bg-white text-black text-xs font-semibold rounded shadow">
@@ -249,6 +291,8 @@ export default function ContentPanel({
 }: ContentPanelProps) {
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
+  const isUnlocked = useIsUnlocked();
+  const [showUnlockModal, setShowUnlockModal] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isAskAIOpen, setIsAskAIOpen] = useState(false);
@@ -400,8 +444,6 @@ export default function ContentPanel({
     }
   };
 
-  // Drag only starts from the grip handle -- everything else in the
-  // toolbar keeps clicking normally instead of fighting a whole-bar drag.
   const handleToolbarDragStart = (e: React.PointerEvent) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     const containerRect = contentAreaRef.current?.getBoundingClientRect();
@@ -472,23 +514,23 @@ export default function ContentPanel({
         )}
         {isCanvasMode && !isFocusMode && (
           <button
-            onClick={handleExport}
+            onClick={() => (isUnlocked ? handleExport() : setShowUnlockModal(true))}
             disabled={isExporting}
             className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
-            title="Export annotated PDF"
+            title={isUnlocked ? 'Export annotated PDF' : 'Export annotated PDF (Pro)'}
           >
-            {isExporting ? '…' : '⬇️'}
+            {isExporting ? '…' : isUnlocked ? '⬇️' : '🔒'}
           </button>
         )}
         {isCanvasMode && !isFocusMode && (
           <button
-            onClick={() => setIsDrawMode((v) => !v)}
+            onClick={() => (isUnlocked ? setIsDrawMode((v) => !v) : setShowUnlockModal(true))}
             className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${
               isDrawMode ? themeClasses.active : themeClasses.hover
             }`}
-            title="Draw on page"
+            title={isUnlocked ? 'Draw on page' : 'Draw on page (Pro)'}
           >
-            ✏️
+            {isUnlocked ? '✏️' : '🔒'}
           </button>
         )}
         {!isFocusMode && (
@@ -545,7 +587,7 @@ export default function ContentPanel({
             panning={{ disabled: isDrawMode }}
             pinch={{ disabled: isDrawMode }}
             wheel={{ disabled: isDrawMode }}
-            onTransform={(_, state) => setZoomLevel(state.scale)}
+            onTransform={(_: any, state: { scale: React.SetStateAction<number>; }) => setZoomLevel(state.scale)}
           >
             <TransformComponent
               wrapperStyle={{ width: '100%', height: '100%' }}
@@ -775,6 +817,10 @@ export default function ContentPanel({
             </>
           )}
         </div>
+      )}
+
+      {showUnlockModal && (
+        <UnlockModal onClose={() => setShowUnlockModal(false)} onUnlocked={() => setShowUnlockModal(false)} />
       )}
 
       {isAskAIOpen && (
