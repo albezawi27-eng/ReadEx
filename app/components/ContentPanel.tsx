@@ -120,11 +120,6 @@ function PageRenderer({
     canvas.style.transform = 'translateX(-50%)';
 
     if (textLayerEl) {
-      // Built once at native (scale=1) size; scaled with a single CSS
-      // transform rather than re-running pdf.js's text layout on every
-      // resize -- same "render once, resize via CSS" idea as the canvas.
-      // top uses the already-scaled cssTop since transform-origin is
-      // top-left, so the crop window still lines up with the canvas.
       textLayerEl.style.position = 'absolute';
       textLayerEl.style.left = '0';
       textLayerEl.style.top = `${-cssTop}px`;
@@ -202,8 +197,6 @@ function PageRenderer({
           await renderTask.promise;
         }
 
-        // Selectable text layer -- built from the same already-loaded
-        // page, so this doesn't reload or reparse the PDF a second time.
         if (!isCancelled && textLayerRef.current) {
           textLayerRef.current.innerHTML = '';
           const nativeViewport = page.getViewport({ scale: 1 });
@@ -259,7 +252,10 @@ function PageRenderer({
           style={{ filter: theme === 'dark' && !focusMode ? 'brightness(0.92)' : 'none' }}
           className={isRendering ? 'opacity-30' : 'opacity-100'}
         />
-        <div ref={textLayerRef} className="textLayer" />
+        {/* "selectable-text" is the class react-zoom-pan-pinch's panning
+            "excluded" list matches against, below -- lets a drag that
+            starts here select text instead of panning the page. */}
+        <div ref={textLayerRef} className="textLayer selectable-text" />
         {isRendering && (
           <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-5">
             <span className="px-3 py-1 bg-white text-black text-xs font-semibold rounded shadow">
@@ -303,6 +299,8 @@ export default function ContentPanel({
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState(DRAW_WIDTHS[0]);
   const [geometryByPage, setGeometryByPage] = useState<Record<number, PageGeometry>>({});
+  const [isExporting, setIsExporting] = useState(false);
+
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
   const toolbarDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
     null
@@ -506,7 +504,27 @@ export default function ContentPanel({
             Visual Section
           </span>
         )}
-       
+        {isCanvasMode && !isFocusMode && (
+          <button
+            onClick={handleExport}
+            disabled={isExporting}
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
+            title="Export annotated PDF"
+          >
+            {isExporting ? '…' : '⬇️'}
+          </button>
+        )}
+        {isCanvasMode && !isFocusMode && (
+          <button
+            onClick={() => setIsDrawMode((v) => !v)}
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${
+              isDrawMode ? themeClasses.active : themeClasses.hover
+            }`}
+            title="Draw on page"
+          >
+            ✏️
+          </button>
+        )}
         {!isFocusMode && (
           <button
             onClick={() => setIsAskAIOpen((v) => !v)}
@@ -558,10 +576,10 @@ export default function ContentPanel({
             limitToBounds={false}
             centerOnInit
             doubleClick={{ disabled: true }}
-            panning={{ disabled: isDrawMode }}
+            panning={{ disabled: isDrawMode, excluded: ['selectable-text'] }}
             pinch={{ disabled: isDrawMode }}
             wheel={{ disabled: isDrawMode }}
-            onTransform={(_: any, state: { scale: React.SetStateAction<number>; }) => setZoomLevel(state.scale)}
+            onTransform={(_, state) => setZoomLevel(state.scale)}
           >
             <TransformComponent
               wrapperStyle={{ width: '100%', height: '100%' }}
@@ -793,15 +811,9 @@ export default function ContentPanel({
         </div>
       )}
 
-
-
       {isAskAIOpen && (
         <AskAI pdfFile={pdfFile ?? null} bookId={activeBookId} onClose={() => setIsAskAIOpen(false)} />
       )}
     </div>
   );
-}
-
-function setIsExporting(arg0: boolean) {
-  throw new Error('Function not implemented.');
 }
