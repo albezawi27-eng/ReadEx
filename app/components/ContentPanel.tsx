@@ -77,10 +77,61 @@ function PageRenderer({
     yBottom: number;
   } | null>(null);
 
+  // Cached so a resize/focus-mode toggle can rebuild the text layer at
+  // the new scale without re-fetching or re-parsing the PDF.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pageRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const textContentRef = useRef<any>(null);
+  const rebuildGenerationRef = useRef(0);
+
+  // Rebuilds the text layer AT the target scale directly, rather than
+  // building once and stretching with a CSS transform -- avoids stacking
+  // a second transform on top of pdf.js's own per-character transforms,
+  // which is what was corrupting selection/copy accuracy.
+  const rebuildTextLayer = async (effectiveScale: number, cssTop: number, cssWidth: number, cssFullHeight: number) => {
+    const textLayerEl = textLayerRef.current;
+    const page = pageRef.current;
+    const textContent = textContentRef.current;
+    if (!textLayerEl || !page || !textContent) return;
+
+    const myGeneration = ++rebuildGenerationRef.current;
+
+    try {
+      const pdfjsModule = await import('pdfjs-dist');
+      const pdfjsLib = pdfjsModule;
+
+      const targetViewport = page.getViewport({ scale: effectiveScale });
+
+      if (rebuildGenerationRef.current !== myGeneration || !textLayerRef.current) return;
+
+      textLayerRef.current.innerHTML = '';
+      const textLayerInstance = new pdfjsLib.TextLayer({
+        textContentSource: textContent,
+        container: textLayerRef.current,
+        viewport: targetViewport,
+      });
+      await textLayerInstance.render();
+
+      if (rebuildGenerationRef.current !== myGeneration || !textLayerRef.current) return;
+
+      // Positioned exactly like the canvas -- plain width/height/top, no
+      // transform, since the viewport above already produced spans at
+      // the correct final pixel scale.
+      textLayerRef.current.style.position = 'absolute';
+      textLayerRef.current.style.left = '0';
+      textLayerRef.current.style.top = `${-cssTop}px`;
+      textLayerRef.current.style.width = `${cssWidth}px`;
+      textLayerRef.current.style.height = `${cssFullHeight}px`;
+      textLayerRef.current.style.transform = 'none';
+    } catch (e) {
+      console.error('Text layer rebuild error:', e);
+    }
+  };
+
   const applySizing = () => {
     const canvas = canvasRef.current;
     const wrapper = wrapperRef.current;
-    const textLayerEl = textLayerRef.current;
     const dims = rawDimsRef.current;
     if (!canvas || !wrapper || !dims) return;
 
@@ -119,15 +170,7 @@ function PageRenderer({
     canvas.style.left = '50%';
     canvas.style.transform = 'translateX(-50%)';
 
-    if (textLayerEl) {
-      textLayerEl.style.position = 'absolute';
-      textLayerEl.style.left = '0';
-      textLayerEl.style.top = `${-cssTop}px`;
-      textLayerEl.style.width = `${nativeCssWidth}px`;
-      textLayerEl.style.height = `${nativeFullPageHeight}px`;
-      textLayerEl.style.transformOrigin = 'top left';
-      textLayerEl.style.transform = `scale(${effectiveScale})`;
-    }
+    rebuildTextLayer(effectiveScale, cssTop, cssWidth, cssFullHeight);
   };
 
   useEffect(() => {
@@ -139,8 +182,6 @@ function PageRenderer({
     let isCancelled = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let renderTask: any = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let textLayerInstance: any = null;
 
     const renderPage = async () => {
       if (!pdfFile || !crop || !canvasRef.current || !wrapperRef.current) return;
@@ -157,6 +198,11 @@ function PageRenderer({
         const arrayBuffer = await pdfFile.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const page = await pdf.getPage(crop.pageNum);
+
+        if (isCancelled) return;
+
+        pageRef.current = page;
+        textContentRef.current = await page.getTextContent();
 
         if (isCancelled) return;
 
@@ -196,21 +242,6 @@ function PageRenderer({
           renderTask = page.render(renderContext);
           await renderTask.promise;
         }
-
-        if (!isCancelled && textLayerRef.current) {
-          textLayerRef.current.innerHTML = '';
-          const nativeViewport = page.getViewport({ scale: 1 });
-          const textContent = await page.getTextContent();
-          if (!isCancelled && textLayerRef.current) {
-            textLayerInstance = new pdfjsLib.TextLayer({
-              textContentSource: textContent,
-              container: textLayerRef.current,
-              viewport: nativeViewport,
-            });
-            await textLayerInstance.render();
-            applySizing();
-          }
-        }
       } catch (e: any) {
         if (e?.name !== 'RenderingCancelledException') {
           console.error('Page rendering error:', e);
@@ -229,7 +260,9 @@ function PageRenderer({
           renderTask.cancel();
         } catch (e) {}
       }
-      textLayerInstance?.cancel?.();
+      rebuildGenerationRef.current++;
+      pageRef.current = null;
+      textContentRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfFile, crop]);
@@ -252,10 +285,7 @@ function PageRenderer({
           style={{ filter: theme === 'dark' && !focusMode ? 'brightness(0.92)' : 'none' }}
           className={isRendering ? 'opacity-30' : 'opacity-100'}
         />
-        {/* "selectable-text" is the class react-zoom-pan-pinch's panning
-            "excluded" list matches against, below -- lets a drag that
-            starts here select text instead of panning the page. */}
-                <div
+        <div
           ref={textLayerRef}
           className="textLayer selectable-text"
           style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
