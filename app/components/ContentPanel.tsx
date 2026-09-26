@@ -255,7 +255,11 @@ function PageRenderer({
         {/* "selectable-text" is the class react-zoom-pan-pinch's panning
             "excluded" list matches against, below -- lets a drag that
             starts here select text instead of panning the page. */}
-        <div ref={textLayerRef} className="textLayer selectable-text" />
+                <div
+          ref={textLayerRef}
+          className="textLayer selectable-text"
+          style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+        />
         {isRendering && (
           <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-5">
             <span className="px-3 py-1 bg-white text-black text-xs font-semibold rounded shadow">
