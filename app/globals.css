@@ -129,8 +129,26 @@ html, body {
   -webkit-user-select: text !important;
 }
 
-.textLayer span,
-.textLayer br {
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  overflow: hidden;
+  line-height: 1;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 1;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  --min-font-size: 1;
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+  /* Lets a drag on blank page area still pan; only the text itself
+     captures pointer events for selection. */
+  pointer-events: none;
+}
+
+.textLayer :is(span, br) {
   color: transparent;
   position: absolute;
   white-space: pre;
@@ -138,6 +156,25 @@ html, body {
   transform-origin: 0% 0%;
   user-select: text !important;
   -webkit-user-select: text !important;
+  pointer-events: auto;
+}
+
+/* THE FIX: pdf.js writes --font-height, --scale-x and --rotate on each
+   span, and --total-scale-factor on the container -- these two rules are
+   what actually turn those into a correctly sized, correctly stretched
+   span. Without them every span stays at the browser default. */
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0px;
+  font-size: calc(var(--total-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent {
+  display: contents;
 }
 
 .textLayer ::selection {

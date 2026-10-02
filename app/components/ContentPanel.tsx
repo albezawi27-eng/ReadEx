@@ -77,19 +77,22 @@ function PageRenderer({
     yBottom: number;
   } | null>(null);
 
-  // Cached so a resize/focus-mode toggle can rebuild the text layer at
-  // the new scale without re-fetching or re-parsing the PDF.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pageRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const textContentRef = useRef<any>(null);
   const rebuildGenerationRef = useRef(0);
 
-  // Rebuilds the text layer AT the target scale directly, rather than
-  // building once and stretching with a CSS transform -- avoids stacking
-  // a second transform on top of pdf.js's own per-character transforms,
-  // which is what was corrupting selection/copy accuracy.
-  const rebuildTextLayer = async (effectiveScale: number, cssTop: number, cssWidth: number, cssFullHeight: number) => {
+  // Builds the text layer at the layout scale -- the same scale the canvas
+  // is displayed at inside its wrapper. react-zoom-pan-pinch's own zoom/pan
+  // then applies uniformly on top of both, so no separate handling of it
+  // is needed here.
+  const rebuildTextLayer = async (
+    effectiveScale: number,
+    cssTop: number,
+    cssWidth: number,
+    cssFullHeight: number
+  ) => {
     const textLayerEl = textLayerRef.current;
     const page = pageRef.current;
     const textContent = textContentRef.current;
@@ -115,9 +118,6 @@ function PageRenderer({
 
       if (rebuildGenerationRef.current !== myGeneration || !textLayerRef.current) return;
 
-      // Positioned exactly like the canvas -- plain width/height/top, no
-      // transform, since the viewport above already produced spans at
-      // the correct final pixel scale.
       textLayerRef.current.style.position = 'absolute';
       textLayerRef.current.style.left = '0';
       textLayerRef.current.style.top = `${-cssTop}px`;
