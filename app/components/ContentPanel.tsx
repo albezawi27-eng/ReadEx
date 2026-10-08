@@ -40,6 +40,11 @@ const FOCUS_MODE_MAX_SCALE = 3;
 const DRAW_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#111827'];
 const DRAW_WIDTHS = [2, 4, 7];
 
+// Temporary, visible-on-screen diagnostic -- remove once the text layer
+// is confirmed aligned. Shows what pdf.js actually wrote, so this can be
+// read straight off a phone screen without DevTools.
+const SHOW_TEXT_LAYER_DEBUG = true;
+
 interface PageGeometry {
   width: number;
   height: number;
@@ -69,6 +74,7 @@ function PageRenderer({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [isRendering, setIsRendering] = useState(false);
+  const [debugInfo, setDebugInfo] = useState('');
   const rawDimsRef = useRef<{
     viewportWidth: number;
     viewportHeight: number;
@@ -82,11 +88,8 @@ function PageRenderer({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const textContentRef = useRef<any>(null);
   const rebuildGenerationRef = useRef(0);
+  const sizingInFlightRef = useRef<Promise<void>>(Promise.resolve());
 
-  // Builds the text layer at the layout scale -- the same scale the canvas
-  // is displayed at inside its wrapper. react-zoom-pan-pinch's own zoom/pan
-  // then applies uniformly on top of both, so no separate handling of it
-  // is needed here.
   const rebuildTextLayer = async (
     effectiveScale: number,
     cssTop: number,
@@ -124,6 +127,18 @@ function PageRenderer({
       textLayerRef.current.style.width = `${cssWidth}px`;
       textLayerRef.current.style.height = `${cssFullHeight}px`;
       textLayerRef.current.style.transform = 'none';
+
+      if (SHOW_TEXT_LAYER_DEBUG) {
+        const firstSpan = textLayerRef.current.querySelector('span');
+        const containerStyle = textLayerRef.current.getAttribute('style') || '(none)';
+        const spanStyle = firstSpan?.getAttribute('style') || '(no span found)';
+        const spanText = firstSpan?.textContent || '';
+        setDebugInfo(
+          `scale=${effectiveScale.toFixed(3)} cssTop=${cssTop.toFixed(1)} cssWidth=${cssWidth.toFixed(1)}\n` +
+            `container: ${containerStyle}\n` +
+            `span[0] text="${spanText}" style: ${spanStyle}`
+        );
+      }
     } catch (e) {
       console.error('Text layer rebuild error:', e);
     }
@@ -170,7 +185,12 @@ function PageRenderer({
     canvas.style.left = '50%';
     canvas.style.transform = 'translateX(-50%)';
 
-    rebuildTextLayer(effectiveScale, cssTop, cssWidth, cssFullHeight);
+    // Chained onto the previous in-flight rebuild rather than fired
+    // independently -- stops an older call's async work from finishing
+    // after a newer one and overwriting it with a stale scale.
+    sizingInFlightRef.current = sizingInFlightRef.current.then(() =>
+      rebuildTextLayer(effectiveScale, cssTop, cssWidth, cssFullHeight)
+    );
   };
 
   useEffect(() => {
@@ -299,6 +319,11 @@ function PageRenderer({
         )}
         {children}
       </div>
+      {SHOW_TEXT_LAYER_DEBUG && debugInfo && (
+        <pre className="mt-2 p-2 text-[10px] leading-tight bg-yellow-100 text-black rounded max-w-full overflow-x-auto whitespace-pre-wrap break-all border border-yellow-400">
+          {debugInfo}
+        </pre>
+      )}
     </div>
   );
 }
@@ -621,7 +646,9 @@ export default function ContentPanel({
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
+                justifyContent: 'center',
                 width: '100%',
+                minHeight: '100%',
                 padding: isFocusMode ? '0' : '1rem',
               }}
             >
