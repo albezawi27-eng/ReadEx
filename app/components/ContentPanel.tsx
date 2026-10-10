@@ -43,8 +43,7 @@ const DRAW_WIDTHS = [2, 4, 7];
 // Temporary, visible-on-screen diagnostic -- remove once the text layer
 // is confirmed aligned. Shows what pdf.js actually wrote, so this can be
 // read straight off a phone screen without DevTools.
-const SHOW_TEXT_LAYER_DEBUG = true;
-
+const SHOW_TEXT_LAYER_DEBUG = false;
 interface PageGeometry {
   width: number;
   height: number;
@@ -127,7 +126,7 @@ function PageRenderer({
       textLayerRef.current.style.width = `${cssWidth}px`;
       textLayerRef.current.style.height = `${cssFullHeight}px`;
       textLayerRef.current.style.transform = 'none';
-
+      textLayerRef.current.style.setProperty('--scale-factor', String(effectiveScale));
       if (SHOW_TEXT_LAYER_DEBUG) {
         const firstSpan = textLayerRef.current.querySelector('span');
         const containerStyle = textLayerRef.current.getAttribute('style') || '(none)';
