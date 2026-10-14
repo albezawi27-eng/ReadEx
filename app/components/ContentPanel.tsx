@@ -40,10 +40,12 @@ const FOCUS_MODE_MAX_SCALE = 3;
 const DRAW_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#111827'];
 const DRAW_WIDTHS = [2, 4, 7];
 
-// Temporary, visible-on-screen diagnostic -- remove once the text layer
-// is confirmed aligned. Shows what pdf.js actually wrote, so this can be
-// read straight off a phone screen without DevTools.
-const SHOW_TEXT_LAYER_DEBUG = false;
+// The text layer is built once at this internal scale and shrunk to the
+// displayed size with a single CSS transform. Building it large keeps every
+// span's computed font-size well above mobile browsers' minimum font size,
+// which otherwise inflates tiny spans on small screens and breaks alignment.
+const TEXT_LAYER_BUILD_SCALE = 2;
+
 interface PageGeometry {
   width: number;
   height: number;
@@ -73,7 +75,6 @@ function PageRenderer({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [isRendering, setIsRendering] = useState(false);
-  const [debugInfo, setDebugInfo] = useState('');
   const rawDimsRef = useRef<{
     viewportWidth: number;
     viewportHeight: number;
@@ -82,70 +83,10 @@ function PageRenderer({
     yBottom: number;
   } | null>(null);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pageRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const textContentRef = useRef<any>(null);
-  const rebuildGenerationRef = useRef(0);
-  const sizingInFlightRef = useRef<Promise<void>>(Promise.resolve());
-
-  const rebuildTextLayer = async (
-    effectiveScale: number,
-    cssTop: number,
-    cssWidth: number,
-    cssFullHeight: number
-  ) => {
-    const textLayerEl = textLayerRef.current;
-    const page = pageRef.current;
-    const textContent = textContentRef.current;
-    if (!textLayerEl || !page || !textContent) return;
-
-    const myGeneration = ++rebuildGenerationRef.current;
-
-    try {
-      const pdfjsModule = await import('pdfjs-dist');
-      const pdfjsLib = pdfjsModule;
-
-      const targetViewport = page.getViewport({ scale: effectiveScale });
-
-      if (rebuildGenerationRef.current !== myGeneration || !textLayerRef.current) return;
-
-      textLayerRef.current.innerHTML = '';
-      const textLayerInstance = new pdfjsLib.TextLayer({
-        textContentSource: textContent,
-        container: textLayerRef.current,
-        viewport: targetViewport,
-      });
-      await textLayerInstance.render();
-
-      if (rebuildGenerationRef.current !== myGeneration || !textLayerRef.current) return;
-
-      textLayerRef.current.style.position = 'absolute';
-      textLayerRef.current.style.left = '0';
-      textLayerRef.current.style.top = `${-cssTop}px`;
-      textLayerRef.current.style.width = `${cssWidth}px`;
-      textLayerRef.current.style.height = `${cssFullHeight}px`;
-      textLayerRef.current.style.transform = 'none';
-      textLayerRef.current.style.setProperty('--scale-factor', String(effectiveScale));
-      if (SHOW_TEXT_LAYER_DEBUG) {
-        const firstSpan = textLayerRef.current.querySelector('span');
-        const containerStyle = textLayerRef.current.getAttribute('style') || '(none)';
-        const spanStyle = firstSpan?.getAttribute('style') || '(no span found)';
-        const spanText = firstSpan?.textContent || '';
-        setDebugInfo(
-          `scale=${effectiveScale.toFixed(3)} cssTop=${cssTop.toFixed(1)} cssWidth=${cssWidth.toFixed(1)}\n` +
-            `container: ${containerStyle}\n` +
-            `span[0] text="${spanText}" style: ${spanStyle}`
-        );
-      }
-    } catch (e) {
-      console.error('Text layer rebuild error:', e);
-    }
-  };
-
   const applySizing = () => {
     const canvas = canvasRef.current;
     const wrapper = wrapperRef.current;
+    const textLayerEl = textLayerRef.current;
     const dims = rawDimsRef.current;
     if (!canvas || !wrapper || !dims) return;
 
@@ -184,12 +125,18 @@ function PageRenderer({
     canvas.style.left = '50%';
     canvas.style.transform = 'translateX(-50%)';
 
-    // Chained onto the previous in-flight rebuild rather than fired
-    // independently -- stops an older call's async work from finishing
-    // after a newer one and overwriting it with a stale scale.
-    sizingInFlightRef.current = sizingInFlightRef.current.then(() =>
-      rebuildTextLayer(effectiveScale, cssTop, cssWidth, cssFullHeight)
-    );
+    if (textLayerEl) {
+      // The layer's own box is at build scale; one transform shrinks it
+      // to the displayed size. Origin is top-left, so `top` (already in
+      // final pixels) lines the crop window up with the canvas.
+      textLayerEl.style.position = 'absolute';
+      textLayerEl.style.left = '0';
+      textLayerEl.style.top = `${-cssTop}px`;
+      textLayerEl.style.width = `${nativeCssWidth * TEXT_LAYER_BUILD_SCALE}px`;
+      textLayerEl.style.height = `${nativeFullPageHeight * TEXT_LAYER_BUILD_SCALE}px`;
+      textLayerEl.style.transformOrigin = 'top left';
+      textLayerEl.style.transform = `scale(${effectiveScale / TEXT_LAYER_BUILD_SCALE})`;
+    }
   };
 
   useEffect(() => {
@@ -201,6 +148,8 @@ function PageRenderer({
     let isCancelled = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let renderTask: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let textLayerInstance: any = null;
 
     const renderPage = async () => {
       if (!pdfFile || !crop || !canvasRef.current || !wrapperRef.current) return;
@@ -217,11 +166,6 @@ function PageRenderer({
         const arrayBuffer = await pdfFile.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const page = await pdf.getPage(crop.pageNum);
-
-        if (isCancelled) return;
-
-        pageRef.current = page;
-        textContentRef.current = await page.getTextContent();
 
         if (isCancelled) return;
 
@@ -261,6 +205,27 @@ function PageRenderer({
           renderTask = page.render(renderContext);
           await renderTask.promise;
         }
+
+        // Selectable text layer, built once at TEXT_LAYER_BUILD_SCALE.
+        if (!isCancelled && textLayerRef.current) {
+          const textContent = await page.getTextContent();
+          if (!isCancelled && textLayerRef.current) {
+            textLayerRef.current.innerHTML = '';
+            // pdf.js spans size their font via var(--scale-factor); it must
+            // match the viewport scale the layer is built with.
+            textLayerRef.current.style.setProperty('--scale-factor', String(TEXT_LAYER_BUILD_SCALE));
+            textLayerRef.current.style.setProperty('--total-scale-factor', String(TEXT_LAYER_BUILD_SCALE));
+
+            const buildViewport = page.getViewport({ scale: TEXT_LAYER_BUILD_SCALE });
+            textLayerInstance = new pdfjsLib.TextLayer({
+              textContentSource: textContent,
+              container: textLayerRef.current,
+              viewport: buildViewport,
+            });
+            await textLayerInstance.render();
+            applySizing();
+          }
+        }
       } catch (e: any) {
         if (e?.name !== 'RenderingCancelledException') {
           console.error('Page rendering error:', e);
@@ -279,9 +244,7 @@ function PageRenderer({
           renderTask.cancel();
         } catch (e) {}
       }
-      rebuildGenerationRef.current++;
-      pageRef.current = null;
-      textContentRef.current = null;
+      textLayerInstance?.cancel?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfFile, crop]);
@@ -318,11 +281,6 @@ function PageRenderer({
         )}
         {children}
       </div>
-      {SHOW_TEXT_LAYER_DEBUG && debugInfo && (
-        <pre className="mt-2 p-2 text-[10px] leading-tight bg-yellow-100 text-black rounded max-w-full overflow-x-auto whitespace-pre-wrap break-all border border-yellow-400">
-          {debugInfo}
-        </pre>
-      )}
     </div>
   );
 }
