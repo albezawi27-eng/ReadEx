@@ -42,9 +42,13 @@ const DRAW_WIDTHS = [2, 4, 7];
 
 // The text layer is built once at this internal scale and shrunk to the
 // displayed size with a single CSS transform. Building it large keeps every
-// span's computed font-size well above mobile browsers' minimum font size,
-// which otherwise inflates tiny spans on small screens and breaks alignment.
+// span's computed font-size well above mobile browsers' minimum font size.
 const TEXT_LAYER_BUILD_SCALE = 2;
+
+// Must match the padding and max-width of the page container below
+// (contentStyle padding of 1rem per side, and the max-w-5xl wrapper).
+const PAGE_AREA_HORIZONTAL_PADDING = 32;
+const PAGE_AREA_MAX_WIDTH = 1024;
 
 interface PageGeometry {
   width: number;
@@ -57,6 +61,7 @@ function PageRenderer({
   crop,
   theme,
   focusMode,
+  selectMode,
   containerWidth,
   containerHeight,
   onGeometryReady,
@@ -66,6 +71,7 @@ function PageRenderer({
   crop: PageCrop;
   theme: string;
   focusMode: boolean;
+  selectMode: boolean;
   containerWidth: number | null;
   containerHeight: number | null;
   onGeometryReady?: (geom: PageGeometry) => void;
@@ -96,7 +102,14 @@ function PageRenderer({
     const nativeFullPageHeight = viewportHeight / scale;
     const nativeCropTop = yTop / scale;
 
-    const availableWidth = containerWidth || nativeCssWidth * PAGE_DISPLAY_SCALE;
+    // The page's real parent box is narrower than the whole content area:
+    // it has side padding outside focus mode, and a max width. Sizing the
+    // page to the full area made it overflow its own box and get cropped.
+    const availableWidth = containerWidth
+      ? focusMode
+        ? containerWidth
+        : Math.min(containerWidth - PAGE_AREA_HORIZONTAL_PADDING, PAGE_AREA_MAX_WIDTH)
+      : nativeCssWidth * PAGE_DISPLAY_SCALE;
     const widthScale = availableWidth / nativeCssWidth;
 
     let effectiveScale: number;
@@ -126,16 +139,18 @@ function PageRenderer({
     canvas.style.transform = 'translateX(-50%)';
 
     if (textLayerEl) {
-      // The layer's own box is at build scale; one transform shrinks it
-      // to the displayed size. Origin is top-left, so `top` (already in
-      // final pixels) lines the crop window up with the canvas.
+      // Centered exactly like the canvas (left 50%, shifted back by half
+      // the displayed width), then shrunk from build scale to display
+      // scale. Origin is top-left, so translate happens in parent space.
       textLayerEl.style.position = 'absolute';
-      textLayerEl.style.left = '0';
+      textLayerEl.style.left = '50%';
       textLayerEl.style.top = `${-cssTop}px`;
       textLayerEl.style.width = `${nativeCssWidth * TEXT_LAYER_BUILD_SCALE}px`;
       textLayerEl.style.height = `${nativeFullPageHeight * TEXT_LAYER_BUILD_SCALE}px`;
       textLayerEl.style.transformOrigin = 'top left';
-      textLayerEl.style.transform = `scale(${effectiveScale / TEXT_LAYER_BUILD_SCALE})`;
+      textLayerEl.style.transform = `translateX(${-cssWidth / 2}px) scale(${
+        effectiveScale / TEXT_LAYER_BUILD_SCALE
+      })`;
     }
   };
 
@@ -206,13 +221,10 @@ function PageRenderer({
           await renderTask.promise;
         }
 
-        // Selectable text layer, built once at TEXT_LAYER_BUILD_SCALE.
         if (!isCancelled && textLayerRef.current) {
           const textContent = await page.getTextContent();
           if (!isCancelled && textLayerRef.current) {
             textLayerRef.current.innerHTML = '';
-            // pdf.js spans size their font via var(--scale-factor); it must
-            // match the viewport scale the layer is built with.
             textLayerRef.current.style.setProperty('--scale-factor', String(TEXT_LAYER_BUILD_SCALE));
             textLayerRef.current.style.setProperty('--total-scale-factor', String(TEXT_LAYER_BUILD_SCALE));
 
@@ -267,10 +279,16 @@ function PageRenderer({
           style={{ filter: theme === 'dark' && !focusMode ? 'brightness(0.92)' : 'none' }}
           className={isRendering ? 'opacity-30' : 'opacity-100'}
         />
+        {/* Only captures touches/clicks in select mode, so in the default
+            mode the page pans freely and nothing here interferes. */}
         <div
           ref={textLayerRef}
-          className="textLayer selectable-text"
-          style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+          className="textLayer"
+          style={{
+            userSelect: 'text',
+            WebkitUserSelect: 'text',
+            pointerEvents: selectMode ? 'auto' : 'none',
+          }}
         />
         {isRendering && (
           <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-5">
@@ -311,6 +329,7 @@ export default function ContentPanel({
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
 
   const [isDrawMode, setIsDrawMode] = useState(false);
+  const [isSelectMode, setIsSelectMode] = useState(false);
   const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | 'text'>('pen');
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState(DRAW_WIDTHS[0]);
@@ -520,6 +539,20 @@ export default function ContentPanel({
             Visual Section
           </span>
         )}
+        {isCanvasMode && (
+          <button
+            onClick={() => {
+              setIsSelectMode((v) => !v);
+              setIsDrawMode(false);
+            }}
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold border ${themeClasses.border} border-opacity-30 ${
+              isSelectMode ? themeClasses.active : themeClasses.hover
+            }`}
+            title={isSelectMode ? 'Text selection on (page panning paused)' : 'Select & copy text'}
+          >
+            Aa
+          </button>
+        )}
         {isCanvasMode && !isFocusMode && (
           <button
             onClick={handleExport}
@@ -532,7 +565,10 @@ export default function ContentPanel({
         )}
         {isCanvasMode && !isFocusMode && (
           <button
-            onClick={() => setIsDrawMode((v) => !v)}
+            onClick={() => {
+              setIsDrawMode((v) => !v);
+              setIsSelectMode(false);
+            }}
             className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${
               isDrawMode ? themeClasses.active : themeClasses.hover
             }`}
@@ -592,7 +628,7 @@ export default function ContentPanel({
             limitToBounds={false}
             centerOnInit
             doubleClick={{ disabled: true }}
-            panning={{ disabled: isDrawMode, excluded: ['selectable-text'] }}
+            panning={{ disabled: isDrawMode || isSelectMode }}
             pinch={{ disabled: isDrawMode }}
             wheel={{ disabled: isDrawMode }}
             onTransform={(_, state) => setZoomLevel(state.scale)}
@@ -617,6 +653,7 @@ export default function ContentPanel({
                     crop={crop}
                     theme={theme}
                     focusMode={isFocusMode}
+                    selectMode={isSelectMode}
                     containerWidth={contentWidth}
                     containerHeight={contentHeight}
                     onGeometryReady={(geom) =>
