@@ -84,23 +84,43 @@ const TOP_LEVEL_NUMBERED_HEADING = /^(?:Chapter\s+\d+|Section\s+\d+|Appendix\s+[
 // A dotted/nested heading: "3.2", "3.2.1 Something", "A.1 Something"
 const SUBSECTION_NUMBERED_HEADING = /^(?:\d+(?:\.\d+)+|[A-Z]\.\d+)\s*[a-zA-Z0-9\s:,\-]*$/;
 
-// Metadata / front-matter noise: dates, affiliations, emails, ORCID-style IDs,
-// page-number-only lines, running headers/footers.
+// Front-matter noise: dates, affiliations, emails, ORCID-style IDs, page
+// numbers, running headers/footers.
 const METADATA_LINE_PATTERNS = [
-  /^(?:\d{1,2}[\/\-.\s])?(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2},?\s*\d{2,4}$/i, // "March 3, 2024"
+  /^(?:\d{1,2}[\/\-.\s])?(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2},?\s*\d{2,4}$/i,
   /^\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}$/i,
-  /^\d{4}-\d{2}-\d{2}$/, // ISO date
+  /^\d{4}-\d{2}-\d{2}$/,
   /^(?:Department|Faculty|School|Institute|University|College)\s+of\b/i,
-  /^[\w.+-]+@[\w-]+\.[\w.-]+$/, // bare email
+  /^[\w.+-]+@[\w-]+\.[\w.-]+$/,
   /orcid\.org|\borcid\b/i,
   /^(?:draft|preprint|working paper|version)\b/i,
   /^page\s+\d+(\s+of\s+\d+)?$/i,
-  /^\d+$/, // bare page number
+  /^\d+$/,
   /^(?:arXiv|doi):/i,
 ];
 
 function isMetadataLine(text: string): boolean {
   return METADATA_LINE_PATTERNS.some((re) => re.test(text));
+}
+
+// One section per page, sized from each page's real dimensions.
+// Used when a PDF has no text layer (scans), or when no headings could be
+// detected. Rendering never needs text, so these pages open normally.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function buildPageSections(pdf: any): Promise<PDFSection[]> {
+  const sections: PDFSection[] = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    // page.view = [xMin, yMin, xMax, yMax] in PDF user space (y points up)
+    const [, bottom, , top] = page.view;
+    sections.push({
+      id: p,
+      title: `Page ${p}`,
+      content: '',
+      crops: [{ pageNum: p, pdfStartY: top, pdfEndY: bottom }],
+    });
+  }
+  return sections;
 }
 
 export async function extractPDFText(file: File): Promise<PDFSection[]> {
@@ -131,8 +151,10 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
       }
     }
 
+    // No text layer at all (scanned / image-only PDF): still readable,
+    // just without detected chapters -- one section per page.
     if (allItems.length === 0) {
-      throw new Error('No text content found in PDF. The PDF may be image-based or encrypted.');
+      return buildPageSections(pdf);
     }
 
     allItems.sort((a, b) => {
@@ -148,6 +170,21 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
     const lines: any[] = [];
     let currentLineItems = [allItems[0]];
 
+    const buildLineText = (items: typeof currentLineItems) => {
+      items.sort((a, b) => a.x - b.x);
+      let lineText = items[0].str;
+      for (let j = 1; j < items.length; j++) {
+        const curr = items[j];
+        const prev = items[j - 1];
+        const estimatedPrevWidth = prev.str.length * (prev.fontSize * 0.5);
+        if (curr.x - (prev.x + estimatedPrevWidth) > prev.fontSize * 0.2 && !prev.str.endsWith(' ') && !curr.str.startsWith(' ')) {
+          lineText += ' ';
+        }
+        lineText += curr.str;
+      }
+      return lineText.replace(/\s+/g, ' ');
+    };
+
     for (let i = 1; i < allItems.length; i++) {
       const item = allItems[i];
       const firstItemInLine = currentLineItems[0];
@@ -155,23 +192,10 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
       if (item.pageNum === firstItemInLine.pageNum && Math.abs(item.y - firstItemInLine.y) < 8) {
         currentLineItems.push(item);
       } else {
-        currentLineItems.sort((a, b) => a.x - b.x);
-
-        let lineText = currentLineItems[0].str;
-        for (let j = 1; j < currentLineItems.length; j++) {
-          const curr = currentLineItems[j];
-          const prev = currentLineItems[j - 1];
-          const estimatedPrevWidth = prev.str.length * (prev.fontSize * 0.5);
-          if (curr.x - (prev.x + estimatedPrevWidth) > prev.fontSize * 0.2 && !prev.str.endsWith(' ') && !curr.str.startsWith(' ')) {
-            lineText += ' ';
-          }
-          lineText += curr.str;
-        }
-
         lines.push({
-          text: lineText.replace(/\s+/g, ' '),
-          maxFontSize: Math.max(...currentLineItems.map(x => x.fontSize)),
-          y: firstItemInLine.y, // Baseline Y of the line
+          text: buildLineText(currentLineItems),
+          maxFontSize: Math.max(...currentLineItems.map((x) => x.fontSize)),
+          y: firstItemInLine.y,
           pageNum: firstItemInLine.pageNum,
         });
         currentLineItems = [item];
@@ -179,26 +203,15 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
     }
 
     if (currentLineItems.length > 0) {
-      currentLineItems.sort((a, b) => a.x - b.x);
-      let lineText = currentLineItems[0].str;
-      for (let j = 1; j < currentLineItems.length; j++) {
-        const curr = currentLineItems[j];
-        const prev = currentLineItems[j - 1];
-        const estimatedPrevWidth = prev.str.length * (prev.fontSize * 0.5);
-        if (curr.x - (prev.x + estimatedPrevWidth) > prev.fontSize * 0.2 && !prev.str.endsWith(' ') && !curr.str.startsWith(' ')) {
-          lineText += ' ';
-        }
-        lineText += curr.str;
-      }
       lines.push({
-        text: lineText.replace(/\s+/g, ' '),
-        maxFontSize: Math.max(...currentLineItems.map(x => x.fontSize)),
+        text: buildLineText(currentLineItems),
+        maxFontSize: Math.max(...currentLineItems.map((x) => x.fontSize)),
         y: currentLineItems[0].y,
         pageNum: currentLineItems[0].pageNum,
       });
     }
 
-    // --- Determine body font size from the most frequent line height ---
+    // --- Body font size = most frequent line height ---
     const sizeFrequencies = new Map<number, number>();
     for (const line of lines) {
       const roundedSize = Math.round(line.maxFontSize);
@@ -220,7 +233,7 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
     let currentSectionContent = '';
     let sectionCounter = 1;
     let currentCrops: PageCrop[] = [];
-    let foundFirstHeading = false; // suppress title-page content until real body starts
+    let foundFirstHeading = false; // suppress title-page furniture until real body starts
 
     const flushSection = () => {
       if (currentCrops.length > 0) {
@@ -257,14 +270,10 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
       }
     };
 
-    // --- Walk lines, classify top-level headings vs. subsection headings vs. body content ---
+    // --- Walk lines: top-level heading vs subsection heading vs body ---
     for (const line of lines) {
       const trimmedText = line.text.trim();
       if (!trimmedText) continue;
-
-      // Skip title-page / metadata noise (title, authors, dates, affiliations, IDs)
-      // wherever it appears -- and unconditionally before the first real heading,
-      // since that's where it lives.
       if (isMetadataLine(trimmedText)) continue;
 
       const fontRatio = bodyFontSize > 0 ? line.maxFontSize / bodyFontSize : 1;
@@ -283,7 +292,6 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
       const isTopLevelNumberedHeading = isShort && !hasMathSymbols && TOP_LEVEL_NUMBERED_HEADING.test(trimmedText);
 
       const isTopLevelHeading =
-        !foundFirstHeading === false && // placeholder no-op kept out; real gating below
         isShort &&
         !hasMathSymbols &&
         !isSubsectionHeading &&
@@ -294,8 +302,7 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
           (isPureTextHeading && isLargerFont && (wordCount >= 2 || isMuchLargerFont))
         );
 
-      // Suppress everything (title, authors, abstract-page furniture that
-      // didn't match a metadata pattern) until the first real heading fires.
+      // Nothing is kept until the first real heading is found.
       if (!foundFirstHeading && !isTopLevelHeading) {
         continue;
       }
@@ -306,8 +313,6 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
         currentSectionTitle = trimmedText;
         extendCrop(line);
       } else if (isSubsectionHeading) {
-        // Fold subsection headings into the current section's content
-        // instead of starting a new sidebar entry.
         currentSectionContent += '\n' + trimmedText + '\n';
         extendCrop(line);
       } else {
@@ -317,30 +322,10 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
     }
     flushSection();
 
-    // Fallback if no sections were detected
-    if (sections.length <= 1 && pdf.numPages > 1) {
-      sections = [];
-      for (let p = 1; p <= pdf.numPages; p++) {
-        let minY = Number.MAX_VALUE;
-        let maxY = Number.MIN_VALUE;
-        for (const line of lines) {
-          if (line.pageNum === p) {
-            minY = Math.min(minY, line.y - line.maxFontSize);
-            maxY = Math.max(maxY, line.y + line.maxFontSize);
-          }
-        }
-
-        sections.push({
-          id: p,
-          title: `Page ${p}`,
-          content: '',
-          crops: [{
-            pageNum: p,
-            pdfStartY: maxY === Number.MIN_VALUE ? 800 : maxY,
-            pdfEndY: minY === Number.MAX_VALUE ? 0 : minY,
-          }],
-        });
-      }
+    // Nothing usable detected (or just one lump in a multi-page book):
+    // fall back to one section per page so the book is always readable.
+    if (sections.length === 0 || (sections.length <= 1 && pdf.numPages > 1)) {
+      sections = await buildPageSections(pdf);
     }
 
     return sections;
