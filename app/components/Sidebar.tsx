@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { extractPDFText, PDFSection } from '@/app/utils/pdfParser';
 
@@ -16,7 +16,7 @@ interface SidebarProps {
   onSectionSelect: (id: string) => void;
   progress: Set<string>;
   onProgressToggle: (id: string) => void;
-  onPDFExtracted?: (sections: PDFSection[], file?: File) => void;
+  onPDFExtracted?: (sections: PDFSection[], file?: File) => Promise<void>;
   onBackToLibrary?: () => void;
   showOnMobile: boolean;
 }
@@ -36,6 +36,17 @@ export default function Sidebar({
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Keeps the highlighted page visible in the list when it changes via
+  // Next/Prev or when the sidebar is reopened (e.g. back on mobile).
+  useEffect(() => {
+    if (!activeSection || !listRef.current) return;
+    const el = listRef.current.querySelector<HTMLElement>(
+      `[data-section-id="${CSS.escape(activeSection)}"]`
+    );
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [activeSection, showOnMobile]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -60,7 +71,7 @@ export default function Sidebar({
       setUploadedFile(file);
 
       if (onPDFExtracted) {
-        onPDFExtracted(extractedSections, file);
+        await onPDFExtracted(extractedSections, file);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Failed to process PDF';
@@ -121,13 +132,14 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Sections List */}
-      <div className="flex-1 overflow-y-auto p-4">
-        <h3 className="font-semibold mb-4 text-sm opacity-75">SECTIONS</h3>
+      {/* Pages List */}
+      <div ref={listRef} className="flex-1 overflow-y-auto p-4">
+        <h3 className="font-semibold mb-4 text-sm opacity-75">PAGES</h3>
         <div className="space-y-2">
           {sections.map((section) => (
             <div
               key={section.id}
+              data-section-id={section.id}
               className="flex items-center gap-3 p-3 rounded-lg cursor-pointer transition"
               onClick={() => onSectionSelect(section.id)}
             >
