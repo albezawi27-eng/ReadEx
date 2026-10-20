@@ -40,10 +40,17 @@ const FOCUS_MODE_MAX_SCALE = 3;
 const DRAW_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#111827'];
 const DRAW_WIDTHS = [2, 4, 7];
 
-// The text layer is built once at this internal scale and shrunk to the
-// displayed size with a single CSS transform. Building it large keeps every
-// span's computed font-size well above mobile browsers' minimum font size.
-const TEXT_LAYER_BUILD_SCALE = 2;
+// Text layer build strategy, chosen by display scale:
+// - At or above this scale (laptops, tablets), the layer is built directly
+//   at the display scale with no transform -- the configuration that
+//   selects and copies correctly on desktop.
+// - Below it (phones), spans would get tiny computed font sizes that
+//   mobile browsers silently enlarge, throwing selection off the glyphs.
+//   There the layer is built at a larger fixed scale and shrunk with one
+//   CSS transform, keeping every span's font size above that minimum.
+const TEXT_LAYER_DIRECT_BUILD_MIN_SCALE = 1;
+const TEXT_LAYER_SMALL_SCALE_BUILD = 2;
+const TEXT_LAYER_REBUILD_DEBOUNCE_MS = 150;
 
 // Must match the padding and max-width of the page container below
 // (contentStyle padding of 1rem per side, and the max-w-5xl wrapper).
@@ -89,10 +96,77 @@ function PageRenderer({
     yBottom: number;
   } | null>(null);
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pageRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const textContentRef = useRef<any>(null);
+  const builtScaleRef = useRef<number | null>(null);
+  const buildGenerationRef = useRef(0);
+  const rebuildTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sizingRef = useRef<{
+    effectiveScale: number;
+    cssTop: number;
+    nativeCssWidth: number;
+    nativeFullPageHeight: number;
+  } | null>(null);
+
+  // Places the text layer over the canvas using the latest display sizing
+  // and whatever scale it was actually built at. When the two match (the
+  // desktop case) there is no transform at all.
+  const positionTextLayer = () => {
+    const el = textLayerRef.current;
+    const sizing = sizingRef.current;
+    const built = builtScaleRef.current;
+    if (!el || !sizing || built === null) return;
+
+    const ratio = sizing.effectiveScale / built;
+    el.style.position = 'absolute';
+    el.style.left = '0';
+    el.style.top = `${-sizing.cssTop}px`;
+    el.style.width = `${sizing.nativeCssWidth * built}px`;
+    el.style.height = `${sizing.nativeFullPageHeight * built}px`;
+    el.style.transformOrigin = 'top left';
+    el.style.transform = Math.abs(ratio - 1) < 0.001 ? 'none' : `scale(${ratio})`;
+  };
+
+  const buildTextLayer = async (buildScale: number) => {
+    const el = textLayerRef.current;
+    const page = pageRef.current;
+    const textContent = textContentRef.current;
+    if (!el || !page || !textContent) return;
+
+    const generation = ++buildGenerationRef.current;
+
+    try {
+      const pdfjsLib = await import('pdfjs-dist');
+      if (buildGenerationRef.current !== generation || !textLayerRef.current) return;
+
+      textLayerRef.current.innerHTML = '';
+      // pdf.js spans size their font via var(--scale-factor); it must match
+      // the viewport scale the layer is built with.
+      textLayerRef.current.style.setProperty('--scale-factor', String(buildScale));
+      textLayerRef.current.style.setProperty('--total-scale-factor', String(buildScale));
+
+      const buildViewport = page.getViewport({ scale: buildScale });
+      const textLayerInstance = new pdfjsLib.TextLayer({
+        textContentSource: textContent,
+        container: textLayerRef.current,
+        viewport: buildViewport,
+      });
+      await textLayerInstance.render();
+
+      if (buildGenerationRef.current !== generation || !textLayerRef.current) return;
+
+      builtScaleRef.current = buildScale;
+      positionTextLayer();
+    } catch (e) {
+      console.error('Text layer build error:', e);
+    }
+  };
+
   const applySizing = () => {
     const canvas = canvasRef.current;
     const wrapper = wrapperRef.current;
-    const textLayerEl = textLayerRef.current;
     const dims = rawDimsRef.current;
     if (!canvas || !wrapper || !dims) return;
 
@@ -103,8 +177,7 @@ function PageRenderer({
     const nativeCropTop = yTop / scale;
 
     // The page's real parent box is narrower than the whole content area:
-    // it has side padding outside focus mode, and a max width. Sizing the
-    // page to the full area made it overflow its own box and get cropped.
+    // it has side padding outside focus mode, and a max width.
     const availableWidth = containerWidth
       ? focusMode
         ? containerWidth
@@ -138,19 +211,20 @@ function PageRenderer({
     canvas.style.left = '50%';
     canvas.style.transform = 'translateX(-50%)';
 
-    if (textLayerEl) {
-      // Centered exactly like the canvas (left 50%, shifted back by half
-      // the displayed width), then shrunk from build scale to display
-      // scale. Origin is top-left, so translate happens in parent space.
-      textLayerEl.style.position = 'absolute';
-      textLayerEl.style.left = '50%';
-      textLayerEl.style.top = `${-cssTop}px`;
-      textLayerEl.style.width = `${nativeCssWidth * TEXT_LAYER_BUILD_SCALE}px`;
-      textLayerEl.style.height = `${nativeFullPageHeight * TEXT_LAYER_BUILD_SCALE}px`;
-      textLayerEl.style.transformOrigin = 'top left';
-      textLayerEl.style.transform = `translateX(${-cssWidth / 2}px) scale(${
-        effectiveScale / TEXT_LAYER_BUILD_SCALE
-      })`;
+    sizingRef.current = { effectiveScale, cssTop, nativeCssWidth, nativeFullPageHeight };
+    positionTextLayer();
+
+    if (pageRef.current && textContentRef.current) {
+      const buildScale =
+        effectiveScale >= TEXT_LAYER_DIRECT_BUILD_MIN_SCALE ? effectiveScale : TEXT_LAYER_SMALL_SCALE_BUILD;
+      const built = builtScaleRef.current;
+
+      if (built === null) {
+        buildTextLayer(buildScale);
+      } else if (Math.abs(built - buildScale) > 0.01) {
+        if (rebuildTimerRef.current) clearTimeout(rebuildTimerRef.current);
+        rebuildTimerRef.current = setTimeout(() => buildTextLayer(buildScale), TEXT_LAYER_REBUILD_DEBOUNCE_MS);
+      }
     }
   };
 
@@ -163,8 +237,6 @@ function PageRenderer({
     let isCancelled = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let renderTask: any = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let textLayerInstance: any = null;
 
     const renderPage = async () => {
       if (!pdfFile || !crop || !canvasRef.current || !wrapperRef.current) return;
@@ -221,20 +293,13 @@ function PageRenderer({
           await renderTask.promise;
         }
 
-        if (!isCancelled && textLayerRef.current) {
-          const textContent = await page.getTextContent();
-          if (!isCancelled && textLayerRef.current) {
-            textLayerRef.current.innerHTML = '';
-            textLayerRef.current.style.setProperty('--scale-factor', String(TEXT_LAYER_BUILD_SCALE));
-            textLayerRef.current.style.setProperty('--total-scale-factor', String(TEXT_LAYER_BUILD_SCALE));
-
-            const buildViewport = page.getViewport({ scale: TEXT_LAYER_BUILD_SCALE });
-            textLayerInstance = new pdfjsLib.TextLayer({
-              textContentSource: textContent,
-              container: textLayerRef.current,
-              viewport: buildViewport,
-            });
-            await textLayerInstance.render();
+        // Text content is fetched after the canvas is on screen so it never
+        // delays the visible page; the layer is built once it arrives.
+        if (!isCancelled) {
+          pageRef.current = page;
+          textContentRef.current = await page.getTextContent();
+          if (!isCancelled) {
+            builtScaleRef.current = null;
             applySizing();
           }
         }
@@ -256,7 +321,11 @@ function PageRenderer({
           renderTask.cancel();
         } catch (e) {}
       }
-      textLayerInstance?.cancel?.();
+      if (rebuildTimerRef.current) clearTimeout(rebuildTimerRef.current);
+      buildGenerationRef.current++;
+      pageRef.current = null;
+      textContentRef.current = null;
+      builtScaleRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfFile, crop]);
