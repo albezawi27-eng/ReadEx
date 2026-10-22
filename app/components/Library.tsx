@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { getAllBooks, getProgress, StoredBook } from '@/app/utils/db';
 import { exportLibrary, importLibrary } from '@/app/utils/backup';
@@ -14,39 +14,38 @@ interface LibraryEntry extends StoredBook {
 
 interface LibraryProps {
   onOpenBook: (bookId: string) => void;
-  onUploadNewBook: (file: File) => void;
+  onUploadNewBook: (file: File) => Promise<void>;
   onDeleteBook: (bookId: string) => void;
   isProcessing: boolean;
   refreshKey: number;
 }
 
 const FEATURES = [
-  {
-    icon: '🧭',
-    title: 'Smart Navigation',
-    desc: 'Automatically finds chapters and sections from your PDF\u2019s headings.',
-  },
-  {
-    icon: '✏️',
-    title: 'Draw & Annotate',
-    desc: 'Mark up pages directly, with color, text, and full undo/redo.',
-  },
-  {
-    icon: '💬',
-    title: 'Ask AI',
-    desc: 'Chat with Gemini about the full document, right where you\u2019re reading.',
-  },
-  {
-    icon: '📤',
-    title: 'Export Anywhere',
-    desc: 'Download your annotated PDF or turn notes into flashcards.',
-  },
+  { icon: '🧭', title: 'Page-by-page reading', desc: 'Jump between pages from the sidebar and track what you have finished.' },
+  { icon: '✏️', title: 'Draw & annotate', desc: 'Mark up pages with colors and text, with full undo and redo.' },
+  { icon: '💬', title: 'Ask AI', desc: 'Chat with Gemini about the whole document, right where you read.' },
+  { icon: '📤', title: 'Export anywhere', desc: 'Download your annotated PDF or turn your notes into flashcards.' },
 ];
 
+const COVER_GRADIENTS = [
+  'from-indigo-500 to-violet-500',
+  'from-sky-500 to-indigo-500',
+  'from-emerald-500 to-teal-500',
+  'from-rose-500 to-orange-400',
+  'from-fuchsia-500 to-purple-500',
+  'from-amber-500 to-orange-500',
+];
+
+function coverGradient(id: string): string {
+  let sum = 0;
+  for (let i = 0; i < id.length; i++) sum += id.charCodeAt(i);
+  return COVER_GRADIENTS[sum % COVER_GRADIENTS.length];
+}
+
 function progressColor(pct: number): string {
-  if (pct >= 100) return 'bg-green-500';
+  if (pct >= 100) return 'bg-emerald-500';
   if (pct >= 33) return 'bg-amber-500';
-  return 'bg-red-400';
+  return 'bg-rose-400';
 }
 
 export default function Library({
@@ -64,16 +63,14 @@ export default function Library({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [toolsBusy, setToolsBusy] = useState<'export' | 'import' | 'flashcards' | null>(null);
   const [toolsMessage, setToolsMessage] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const backupInputRef = useRef<HTMLInputElement>(null);
   const [localRefreshKey, setLocalRefreshKey] = useState(0);
 
   const heroGradient =
     theme === 'dark'
-      ? 'bg-gradient-to-b from-[#20222a] via-[#1a1b1e] to-[#1a1b1e]'
+      ? 'bg-gradient-to-b from-[#1a1d2e] via-[#0e1015] to-[#0e1015]'
       : theme === 'colorful'
-        ? 'bg-gradient-to-b from-orange-100 via-orange-50 to-orange-50'
-        : 'bg-gradient-to-b from-blue-50 via-white to-white';
+        ? 'bg-gradient-to-b from-orange-100 via-amber-50 to-amber-50'
+        : 'bg-gradient-to-b from-indigo-50 via-slate-50 to-slate-50';
 
   useEffect(() => {
     let cancelled = false;
@@ -102,8 +99,9 @@ export default function Library({
     };
   }, [refreshKey, localRefreshKey]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     setUploadError('');
     if (!file) return;
 
@@ -118,8 +116,11 @@ export default function Library({
       return;
     }
 
-    onUploadNewBook(file);
-    e.target.value = '';
+    try {
+      await onUploadNewBook(file);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Failed to upload this book.');
+    }
   };
 
   const handleDeleteClick = (e: React.MouseEvent, bookId: string) => {
@@ -172,7 +173,6 @@ export default function Library({
     try {
       const blob = await exportNotesAsFlashcardPdf();
       downloadBlob(blob, 'readex-flashcards.pdf');
-      setToolsMessage('');
     } catch (err) {
       console.error('Flashcard export failed:', err);
       setToolsMessage(err instanceof Error ? err.message : 'Flashcard export failed.');
@@ -181,106 +181,107 @@ export default function Library({
     }
   };
 
+  const toolButtonClass = `text-xs font-medium px-3 py-2 rounded-lg border ${themeClasses.border} ${themeClasses.card} ${themeClasses.hover} transition disabled:opacity-50`;
+
   return (
     <div className={`w-full h-screen ${heroGradient} ${themeClasses.text} flex flex-col overflow-y-auto`}>
-      <div className="max-w-4xl w-full mx-auto px-8 pt-14 pb-4">
-        <div className="flex items-center gap-3 mb-2">
-          <span className="text-4xl leading-none">📖</span>
-          <h1 className="text-4xl font-extrabold tracking-tight">ReadEx</h1>
-        </div>
-        <p className="text-sm opacity-60 mb-10">
-        ReadEx Organizes Your Study.
+      {/* Hidden inputs shared by the buttons below */}
+      <input
+        id="library-upload-input"
+        type="file"
+        accept=".pdf"
+        className="hidden"
+        onChange={handleFileChange}
+        disabled={isProcessing}
+      />
+      <input
+        id="library-import-input"
+        type="file"
+        accept=".zip"
+        className="hidden"
+        onChange={handleImportFileSelected}
+      />
 
-        Read, Annotate, Take Notes, Save Progress, and Understand Your PDFs With AI Built In.
-        </p>
+      <div className="max-w-5xl w-full mx-auto px-6 md:px-8 pt-12 pb-6">
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-3xl shadow-lg shadow-indigo-500/30">
+            📖
+          </div>
+          <div>
+            <h1 className="text-4xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-500 to-violet-500 bg-clip-text text-transparent">
+              ReadEx
+            </h1>
+            <p className={`text-sm mt-0.5 ${themeClasses.muted}`}>
+              Read, annotate, and understand your PDFs — with AI built in.
+            </p>
+          </div>
+        </div>
       </div>
 
-      <div className="max-w-4xl w-full mx-auto px-8 pb-12 flex-1">
-        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-4">
-          <h2 className="text-xl font-semibold opacity-80">My Library</h2>
+      <div className="max-w-5xl w-full mx-auto px-6 md:px-8 pb-12 flex-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <h2 className="text-lg font-semibold">My Library</h2>
           <label
-            className={`px-5 py-3 rounded-lg font-medium cursor-pointer transition ${themeClasses.button} ${
-              isProcessing ? 'opacity-60 pointer-events-none' : ''
-            }`}
+            htmlFor="library-upload-input"
+            className={`px-5 py-2.5 rounded-xl text-sm font-semibold cursor-pointer text-center transition ${
+              themeClasses.button
+            } ${isProcessing ? 'opacity-60 pointer-events-none' : ''}`}
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf"
-              className="hidden"
-              onChange={handleFileChange}
-              disabled={isProcessing}
-            />
-            {isProcessing ? '⏳ Processing...' : '📄 Upload New Book'}
+            {isProcessing ? '⏳ Processing…' : '＋ Add a book'}
           </label>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 mb-8">
-          <button
-            onClick={handleExportLibrary}
-            disabled={toolsBusy !== null}
-            className={`text-xs px-3 py-2 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
-            title="Download everything: books, progress, notes, annotations, AI chats"
-          >
-            {toolsBusy === 'export' ? '⏳ Exporting...' : '💾 Export Library'}
+        <div className="flex flex-wrap items-center gap-2 mb-6">
+          <button onClick={handleExportLibrary} disabled={toolsBusy !== null} className={toolButtonClass}>
+            {toolsBusy === 'export' ? '⏳ Exporting…' : '💾 Backup library'}
           </button>
-          <button
-            onClick={() => backupInputRef.current?.click()}
-            disabled={toolsBusy !== null}
-            className={`text-xs px-3 py-2 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
-            title="Restore from a previously exported backup"
-          >
-            {toolsBusy === 'import' ? '⏳ Importing...' : '📥 Import Library'}
-          </button>
-          <input
-            ref={backupInputRef}
-            type="file"
-            accept=".zip"
-            className="hidden"
-            onChange={handleImportFileSelected}
-          />
-          <button
-            onClick={handleExportFlashcards}
-            disabled={toolsBusy !== null}
-            className={`text-xs px-3 py-2 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
-            title="Export all notes as a flashcard PDF"
-          >
-            {toolsBusy === 'flashcards' ? '⏳ Exporting...' : '🗂️ Export Flashcards'}
+          <label htmlFor="library-import-input" className={`${toolButtonClass} cursor-pointer`}>
+            {toolsBusy === 'import' ? '⏳ Importing…' : '📥 Restore backup'}
+          </label>
+          <button onClick={handleExportFlashcards} disabled={toolsBusy !== null} className={toolButtonClass}>
+            {toolsBusy === 'flashcards' ? '⏳ Exporting…' : '🗂️ Flashcards PDF'}
           </button>
         </div>
 
-        {toolsMessage && <div className="mb-6 text-sm opacity-70">{toolsMessage}</div>}
+        {toolsMessage && <div className={`mb-5 text-sm ${themeClasses.muted}`}>{toolsMessage}</div>}
 
         {uploadError && (
-          <div className="mb-6 p-3 bg-opacity-20 bg-red-500 rounded text-sm text-red-700 dark:text-red-300">
+          <div className="mb-5 p-3 rounded-xl text-sm bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/20">
             ⚠️ {uploadError}
           </div>
         )}
 
         {isLoading ? (
-          <p className="opacity-60">Loading your library...</p>
+          <p className={themeClasses.muted}>Loading your library…</p>
         ) : entries.length === 0 ? (
           <div>
-            <div className="text-center py-12 opacity-70">
-              <p className="text-lg">No books yet.</p>
-              <p className="text-sm mt-2">Upload a PDF above to get started.</p>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
-              {FEATURES.map((f) => (
+            <label
+              htmlFor="library-upload-input"
+              className={`block text-center rounded-2xl border-2 border-dashed ${themeClasses.border} ${themeClasses.card} px-6 py-12 cursor-pointer ${themeClasses.hover} transition mb-8`}
+            >
+              <div className="text-4xl mb-3">📄</div>
+              <p className="font-semibold">Add your first PDF</p>
+              <p className={`text-sm mt-1 ${themeClasses.muted}`}>Click to choose a file — it stays on this device.</p>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {FEATURES.map((f, i) => (
                 <div
                   key={f.title}
-                  className={`p-5 rounded-xl border ${themeClasses.border} border-opacity-20 ${themeClasses.sidebg}`}
+                  style={{ animationDelay: `${i * 70}ms` }}
+                  className={`fade-up p-5 rounded-2xl border ${themeClasses.border} ${themeClasses.card}`}
                 >
-                  <div className="text-2xl mb-2">{f.icon}</div>
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center text-xl mb-3">
+                    {f.icon}
+                  </div>
                   <h3 className="font-semibold mb-1">{f.title}</h3>
-                  <p className="text-sm opacity-70">{f.desc}</p>
+                  <p className={`text-sm ${themeClasses.muted}`}>{f.desc}</p>
                 </div>
               ))}
             </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {entries.map((entry) => {
+            {entries.map((entry, i) => {
               const pct =
                 entry.totalSections > 0
                   ? Math.round((entry.completedCount / entry.totalSections) * 100)
@@ -292,30 +293,44 @@ export default function Library({
                   key={entry.id}
                   onClick={() => onOpenBook(entry.id)}
                   onMouseLeave={() => isConfirmingDelete && setPendingDeleteId(null)}
-                  className={`relative text-left p-5 rounded-xl border ${themeClasses.border} border-opacity-20 ${themeClasses.hover} transition cursor-pointer`}
+                  style={{ animationDelay: `${i * 60}ms` }}
+                  className={`fade-up group relative rounded-2xl border ${themeClasses.border} ${themeClasses.card} overflow-hidden cursor-pointer transition hover:-translate-y-0.5 hover:shadow-xl`}
                 >
+                  <div
+                    className={`h-24 bg-gradient-to-br ${coverGradient(
+                      entry.id
+                    )} flex items-center justify-center text-4xl`}
+                  >
+                    📘
+                  </div>
+
                   <button
                     onClick={(e) => handleDeleteClick(e, entry.id)}
-                    className={`absolute top-3 right-3 text-xs px-2 py-1 rounded-full transition ${
+                    className={`absolute top-2 right-2 text-xs px-2 py-1 rounded-full transition ${
                       isConfirmingDelete
                         ? 'bg-red-500 text-white'
-                        : 'opacity-40 hover:opacity-100 hover:bg-red-500 hover:text-white'
+                        : 'bg-black/25 text-white opacity-0 group-hover:opacity-100 hover:bg-red-500'
                     }`}
                     title={isConfirmingDelete ? 'Click again to confirm' : 'Delete book'}
                   >
                     {isConfirmingDelete ? 'Confirm delete?' : '🗑️'}
                   </button>
 
-                  <h3 className="font-semibold truncate mb-2 pr-16">{entry.title}</h3>
-                  <p className="text-xs opacity-50 mb-3">
-                    Added {new Date(entry.uploadedAt).toLocaleDateString()}
-                  </p>
-                  <div className="w-full h-2 rounded-full bg-current bg-opacity-10 overflow-hidden">
-                    <div className={`h-full transition-all ${progressColor(pct)}`} style={{ width: `${pct}%` }} />
+                  <div className="p-4">
+                    <h3 className="font-semibold truncate mb-1">{entry.title}</h3>
+                    <p className={`text-xs mb-3 ${themeClasses.muted}`}>
+                      Added {new Date(entry.uploadedAt).toLocaleDateString()}
+                    </p>
+                    <div className="h-1.5 rounded-full bg-current/10 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${progressColor(pct)}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <p className={`text-xs mt-2 ${themeClasses.muted}`}>
+                      {entry.completedCount} / {entry.totalSections} pages · {pct}%
+                    </p>
                   </div>
-                  <p className="text-xs opacity-50 mt-2">
-                    {entry.completedCount} / {entry.totalSections} sections · {pct}%
-                  </p>
                 </div>
               );
             })}

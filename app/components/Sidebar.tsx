@@ -21,6 +21,12 @@ interface SidebarProps {
   showOnMobile: boolean;
 }
 
+const THEME_OPTIONS = [
+  { name: 'light', label: 'Light', icon: '☀️' },
+  { name: 'dark', label: 'Dark', icon: '🌙' },
+  { name: 'colorful', label: 'Warm', icon: '🎨' },
+] as const;
+
 export default function Sidebar({
   sections,
   activeSection,
@@ -33,13 +39,12 @@ export default function Sidebar({
 }: SidebarProps) {
   const { theme, setTheme } = useTheme();
   const themeClasses = getThemeClasses(theme);
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Keeps the highlighted page visible in the list when it changes via
-  // Next/Prev or when the sidebar is reopened (e.g. back on mobile).
+  // Keeps the highlighted page visible when it changes via Next/Prev or
+  // when the sidebar is reopened (e.g. back on mobile).
   useEffect(() => {
     if (!activeSection || !listRef.current) return;
     const el = listRef.current.querySelector<HTMLElement>(
@@ -50,6 +55,7 @@ export default function Sidebar({
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     setUploadError('');
 
     if (!file) return;
@@ -68,8 +74,6 @@ export default function Sidebar({
     setIsUploading(true);
     try {
       const extractedSections = await extractPDFText(file);
-      setUploadedFile(file);
-
       if (onPDFExtracted) {
         await onPDFExtracted(extractedSections, file);
       }
@@ -82,119 +86,129 @@ export default function Sidebar({
     }
   };
 
+  const total = sections.length;
+  const done = progress.size;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
   return (
     <div
       className={`w-full md:w-80 ${themeClasses.sidebg} ${themeClasses.sidetext} border-r ${themeClasses.border} ${
         showOnMobile ? 'flex' : 'hidden'
       } md:flex flex-col h-screen overflow-hidden`}
     >
-      {/* Upload Section */}
-      <div className="p-4 md:p-6 border-b border-current opacity-20">
-        {onBackToLibrary && (
-          <button
-            onClick={onBackToLibrary}
-            className={`w-full mb-3 px-4 py-2 rounded-lg text-sm font-medium transition ${themeClasses.hover} border ${themeClasses.border} border-opacity-30`}
-          >
-            📚 My Library
-          </button>
-        )}
-
-        <label
-          className={`block w-full px-4 py-3 rounded-lg font-medium cursor-pointer transition ${
-            uploadedFile
-              ? `bg-green-500 hover:bg-green-600 text-white`
-              : themeClasses.button
-          } text-center ${isUploading ? 'opacity-60' : ''}`}
-        >
-          <input
-            type="file"
-            accept=".pdf"
-            className="hidden"
-            onChange={handleFileUpload}
-            disabled={isUploading}
-          />
-          {isUploading ? '⏳ Processing...' : uploadedFile ? '✅ PDF Loaded' : '📄 Upload PDF'}
-        </label>
-
-        {uploadedFile && (
-          <div className="mt-3 p-2 bg-opacity-20 bg-green-500 rounded text-xs">
-            <p className="font-semibold truncate">📋 {uploadedFile.name}</p>
-            <p className="opacity-75 text-xs mt-1">
-              Size: {(uploadedFile.size / 1024).toFixed(2)} KB
-            </p>
+      {/* Brand + actions */}
+      <div className="p-4 pb-3">
+        <div className="flex items-center gap-2.5 mb-4">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-lg shadow-md shadow-indigo-500/25">
+            📖
           </div>
-        )}
+          <span className="text-lg font-extrabold tracking-tight">ReadEx</span>
+        </div>
+
+        <div className="flex gap-2">
+          {onBackToLibrary && (
+            <button
+              onClick={onBackToLibrary}
+              className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border ${themeClasses.border} ${themeClasses.hover} transition`}
+            >
+              ← Library
+            </button>
+          )}
+          <label
+            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium text-center cursor-pointer transition ${
+              themeClasses.button
+            } ${isUploading ? 'opacity-60 pointer-events-none' : ''}`}
+          >
+            <input
+              type="file"
+              accept=".pdf"
+              className="hidden"
+              onChange={handleFileUpload}
+              disabled={isUploading}
+            />
+            {isUploading ? '⏳ Processing…' : '＋ Add PDF'}
+          </label>
+        </div>
 
         {uploadError && (
-          <div className="mt-3 p-2 bg-opacity-20 bg-red-500 rounded text-xs text-red-700 dark:text-red-300">
-            <p className="font-semibold">⚠️ {uploadError}</p>
+          <div className="mt-3 p-2.5 rounded-lg text-xs bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/20">
+            ⚠️ {uploadError}
           </div>
         )}
       </div>
 
-      {/* Pages List */}
-      <div ref={listRef} className="flex-1 overflow-y-auto p-4">
-        <h3 className="font-semibold mb-4 text-sm opacity-75">PAGES</h3>
-        <div className="space-y-2">
-          {sections.map((section) => (
-            <div
-              key={section.id}
-              data-section-id={section.id}
-              className="flex items-center gap-3 p-3 rounded-lg cursor-pointer transition"
-              onClick={() => onSectionSelect(section.id)}
-            >
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onProgressToggle(section.id);
-                }}
-                className={`flex-shrink-0 w-6 h-6 md:w-5 md:h-5 rounded border-2 flex items-center justify-center transition ${
-                  progress.has(section.id)
-                    ? `${themeClasses.active} border-current`
-                    : `border-current opacity-40 hover:opacity-70`
-                }`}
-              >
-                {progress.has(section.id) && <span className="text-sm">✓</span>}
-              </button>
-
-              <button
-                className={`flex-1 text-left text-sm font-medium px-3 py-2 rounded transition ${
-                  activeSection === section.id ? themeClasses.active : themeClasses.hover
-                }`}
-                onClick={() => onSectionSelect(section.id)}
-              >
-                {section.title}
-              </button>
-            </div>
-          ))}
+      {/* Reading progress */}
+      <div className="px-4 pb-3">
+        <div className="flex items-center justify-between text-xs mb-1.5">
+          <span className="font-semibold uppercase tracking-wider opacity-60">Progress</span>
+          <span className="opacity-60">
+            {done} / {total} · {pct}%
+          </span>
+        </div>
+        <div className="h-1.5 rounded-full bg-current/10 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
+            style={{ width: `${pct}%` }}
+          />
         </div>
       </div>
 
-      {/* Theme Customizer */}
-      <div className="p-4 border-t border-current opacity-20">
-        <h4 className="text-xs font-semibold uppercase mb-3 opacity-75">Theme</h4>
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            { name: 'light', label: '☀️ Light', emoji: 'light' },
-            { name: 'dark', label: '🌙 Dark', emoji: 'dark' },
-            { name: 'colorful', label: '🎨 Colorful', emoji: 'colorful' },
-          ].map((themeOption) => (
+      <div className={`border-t ${themeClasses.border}`} />
+
+      {/* Pages list */}
+      <div ref={listRef} className="flex-1 overflow-y-auto p-3">
+        <div className="space-y-0.5">
+          {sections.map((section) => {
+            const isActive = activeSection === section.id;
+            const isDone = progress.has(section.id);
+            return (
+              <div
+                key={section.id}
+                data-section-id={section.id}
+                onClick={() => onSectionSelect(section.id)}
+                className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition ${
+                  isActive ? themeClasses.active : themeClasses.hover
+                }`}
+              >
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onProgressToggle(section.id);
+                  }}
+                  title={isDone ? 'Mark as unread' : 'Mark as read'}
+                  className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[11px] leading-none transition ${
+                    isDone
+                      ? 'bg-emerald-500 border-emerald-500 text-white'
+                      : 'border-current opacity-30 hover:opacity-70'
+                  }`}
+                >
+                  {isDone && '✓'}
+                </button>
+                <span className={`flex-1 text-sm truncate ${isActive ? 'font-semibold' : 'font-medium'}`}>
+                  {section.title}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Theme switcher */}
+      <div className={`p-3 border-t ${themeClasses.border}`}>
+        <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl border ${themeClasses.border} ${themeClasses.bg}`}>
+          {THEME_OPTIONS.map((opt) => (
             <button
-              key={themeOption.name}
-              onClick={() => setTheme(themeOption.name as 'light' | 'dark' | 'colorful')}
-              className={`py-2 px-2 text-xs rounded font-semibold transition ${
-                theme === themeOption.name
-                  ? `${themeClasses.active} ring-2 ring-current`
-                  : `${themeClasses.hover} opacity-70`
+              key={opt.name}
+              onClick={() => setTheme(opt.name)}
+              className={`py-1.5 text-xs rounded-lg font-semibold transition ${
+                theme === opt.name ? `${themeClasses.active} shadow-sm` : themeClasses.hover
               }`}
             >
-              {themeOption.label}
+              <span className="mr-1">{opt.icon}</span>
+              {opt.label}
             </button>
           ))}
         </div>
-        <p className="text-xs opacity-50 mt-3">
-          Progress: {progress.size} / {sections.length} completed
-        </p>
       </div>
     </div>
   );

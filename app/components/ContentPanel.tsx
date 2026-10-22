@@ -32,6 +32,8 @@ interface ContentPanelProps {
   nextSectionTitle: string | null;
 }
 
+type ThemeClasses = ReturnType<typeof getThemeClasses>;
+
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.1;
@@ -42,8 +44,7 @@ const DRAW_WIDTHS = [2, 4, 7];
 
 // Text layer build strategy, chosen by display scale:
 // - At or above this scale (laptops, tablets), the layer is built directly
-//   at the display scale with no transform -- the configuration that
-//   selects and copies correctly on desktop.
+//   at the display scale with no transform.
 // - Below it (phones), spans would get tiny computed font sizes that
 //   mobile browsers silently enlarge, throwing selection off the glyphs.
 //   There the layer is built at a larger fixed scale and shrunk with one
@@ -61,6 +62,35 @@ interface PageGeometry {
   width: number;
   height: number;
   offset: number;
+}
+
+function ToolButton({
+  onClick,
+  title,
+  active,
+  disabled,
+  themeClasses,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  active?: boolean;
+  disabled?: boolean;
+  themeClasses: ThemeClasses;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-sm font-semibold transition disabled:opacity-40 ${
+        active ? themeClasses.active : themeClasses.hover
+      }`}
+    >
+      {children}
+    </button>
+  );
 }
 
 function PageRenderer({
@@ -110,9 +140,6 @@ function PageRenderer({
     nativeFullPageHeight: number;
   } | null>(null);
 
-  // Places the text layer over the canvas using the latest display sizing
-  // and whatever scale it was actually built at. When the two match (the
-  // desktop case) there is no transform at all.
   const positionTextLayer = () => {
     const el = textLayerRef.current;
     const sizing = sizingRef.current;
@@ -176,8 +203,6 @@ function PageRenderer({
     const nativeFullPageHeight = viewportHeight / scale;
     const nativeCropTop = yTop / scale;
 
-    // The page's real parent box is narrower than the whole content area:
-    // it has side padding outside focus mode, and a max width.
     const availableWidth = containerWidth
       ? focusMode
         ? containerWidth
@@ -333,14 +358,16 @@ function PageRenderer({
   return (
     <div className={`flex flex-col items-center w-full ${focusMode ? '' : 'mb-8'}`}>
       {!focusMode && (
-        <div className="text-xs opacity-40 mb-2 font-semibold tracking-wider uppercase">
+        <div className="text-[11px] opacity-50 mb-2 font-semibold tracking-widest uppercase">
           Page {crop.pageNum}
         </div>
       )}
       <div
         ref={wrapperRef}
-        className={`bg-white shadow-2xl relative mx-auto transition-opacity duration-300 ${
-          theme === 'dark' && !focusMode ? 'ring-1 ring-[#3a3b42]' : ''
+        className={`bg-white relative mx-auto transition-opacity duration-300 ${
+          focusMode
+            ? ''
+            : `shadow-xl ring-1 ${theme === 'dark' ? 'ring-white/10' : 'ring-black/5'}`
         }`}
       >
         <canvas
@@ -349,10 +376,13 @@ function PageRenderer({
           className={isRendering ? 'opacity-30' : 'opacity-100'}
         />
         {/* Only captures touches/clicks in select mode, so in the default
-            mode the page pans freely and nothing here interferes. */}
+            mode the page pans freely and nothing here interferes.
+            "selectable-text" is the class the pan library's "excluded" list
+            matches, so a drag that starts here selects text instead of
+            panning. */}
         <div
           ref={textLayerRef}
-          className="textLayer"
+          className="textLayer selectable-text"
           style={{
             userSelect: 'text',
             WebkitUserSelect: 'text',
@@ -360,9 +390,9 @@ function PageRenderer({
           }}
         />
         {isRendering && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-5">
-            <span className="px-3 py-1 bg-white text-black text-xs font-semibold rounded shadow">
-              Rendering...
+          <div className="absolute inset-0 flex items-center justify-center bg-black/5">
+            <span className="px-3 py-1 bg-white text-slate-700 text-xs font-semibold rounded-full shadow">
+              Rendering…
             </span>
           </div>
         )}
@@ -391,6 +421,7 @@ export default function ContentPanel({
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isAskAIOpen, setIsAskAIOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(true);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
@@ -399,6 +430,9 @@ export default function ContentPanel({
 
   const [isDrawMode, setIsDrawMode] = useState(false);
   const [isSelectMode, setIsSelectMode] = useState(false);
+  const [isCoarsePointer, setIsCoarsePointer] = useState(false);
+  const [selectedText, setSelectedText] = useState('');
+  const [copied, setCopied] = useState(false);
   const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | 'text'>('pen');
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState(DRAW_WIDTHS[0]);
@@ -425,6 +459,58 @@ export default function ContentPanel({
     canUndo,
     canRedo,
   } = useAnnotations(activeBookId, pageNums);
+
+  // Notes start collapsed on small screens to leave room to read.
+  useEffect(() => {
+    if (window.innerWidth < 768) setNotesOpen(false);
+  }, []);
+
+  // Touch devices pause panning while selecting text; mouse devices keep
+  // panning on and just skip drags that start on the text layer.
+  useEffect(() => {
+    const mq = window.matchMedia('(pointer: coarse)');
+    setIsCoarsePointer(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setIsCoarsePointer(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // Tracks the live text selection so the Copy pill can show up.
+  useEffect(() => {
+    if (!isSelectMode) {
+      setSelectedText('');
+      return;
+    }
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      const text = sel?.toString() ?? '';
+      const anchor = sel?.anchorNode ?? null;
+      const anchorEl = anchor && anchor.nodeType === 1 ? anchor : anchor?.parentNode ?? null;
+      const inside = !!(anchorEl && contentAreaRef.current?.contains(anchorEl));
+      setSelectedText(inside ? text : '');
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, [isSelectMode]);
+
+  const handleCopySelection = async () => {
+    if (!selectedText) return;
+    try {
+      await navigator.clipboard.writeText(selectedText);
+    } catch {
+      document.execCommand('copy');
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  const toggleSelectMode = () => {
+    setIsSelectMode((v) => {
+      if (v) window.getSelection()?.removeAllRanges();
+      return !v;
+    });
+    setIsDrawMode(false);
+  };
 
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
@@ -574,8 +660,11 @@ export default function ContentPanel({
     return (
       <div className={`flex-1 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} items-center justify-center p-8`}>
         <div className="text-center">
-          <h1 className="text-4xl font-bold mb-4 opacity-50">ReadEx</h1>
-          <p className="text-lg opacity-75">Select a section to start reading</p>
+          <div className="text-5xl mb-4">📖</div>
+          <h1 className="text-3xl font-extrabold mb-2 bg-gradient-to-r from-indigo-500 to-violet-500 bg-clip-text text-transparent">
+            ReadEx
+          </h1>
+          <p className={themeClasses.muted}>Select a page to start reading</p>
         </div>
       </div>
     );
@@ -585,6 +674,11 @@ export default function ContentPanel({
   const hasPrev = !!prevSectionTitle;
   const hasNext = !!nextSectionTitle;
 
+  const navButtonClass = (enabled: boolean) =>
+    `flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium transition min-w-0 border ${
+      themeClasses.border
+    } ${enabled ? `${themeClasses.card} ${themeClasses.hover}` : 'opacity-30 cursor-not-allowed'}`;
+
   return (
     <div
       ref={panelRef}
@@ -592,92 +686,99 @@ export default function ContentPanel({
     >
       {/* Header */}
       <div
-        className={`px-4 py-3 md:px-8 md:py-6 border-b ${themeClasses.border} border-opacity-20 shrink-0 flex justify-between items-center gap-3`}
+        className={`px-3 py-2.5 md:px-6 md:py-3.5 border-b ${themeClasses.border} ${themeClasses.sidebg} shrink-0 flex items-center gap-2 md:gap-3`}
       >
         {!isFocusMode && (
           <button
             onClick={onShowSidebar}
-            className={`md:hidden shrink-0 text-sm px-3 py-1.5 rounded-lg border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
+            className={`md:hidden shrink-0 text-sm px-3 py-1.5 rounded-lg border ${themeClasses.border} ${themeClasses.hover}`}
           >
-            ← Sections
+            ← Pages
           </button>
         )}
-        <h1 className="text-lg md:text-3xl font-bold truncate flex-1 md:max-w-xl">{activeSection.title}</h1>
-        {isCanvasMode && !isFocusMode && (
-          <span className="hidden md:inline-block text-xs opacity-50 px-3 py-1 border border-current rounded-full uppercase tracking-wider font-semibold shrink-0">
-            Visual Section
-          </span>
-        )}
-        {isCanvasMode && (
-          <button
-            onClick={() => {
-              setIsSelectMode((v) => !v);
-              setIsDrawMode(false);
-            }}
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold border ${themeClasses.border} border-opacity-30 ${
-              isSelectMode ? themeClasses.active : themeClasses.hover
-            }`}
-            title={isSelectMode ? 'Text selection on (page panning paused)' : 'Select & copy text'}
+        <h1 className="text-base md:text-xl font-bold truncate flex-1 min-w-0">{activeSection.title}</h1>
+
+        <div className={`flex items-center gap-0.5 p-1 rounded-xl border ${themeClasses.border} ${themeClasses.bg}`}>
+          {isCanvasMode && (
+            <ToolButton
+              themeClasses={themeClasses}
+              onClick={toggleSelectMode}
+              active={isSelectMode}
+              title={isSelectMode ? 'Text selection on — turn off to move the page' : 'Select & copy text'}
+            >
+              Aa
+            </ToolButton>
+          )}
+          {isCanvasMode && !isFocusMode && (
+            <ToolButton
+              themeClasses={themeClasses}
+              onClick={() => {
+                setIsDrawMode((v) => !v);
+                if (isSelectMode) toggleSelectMode();
+              }}
+              active={isDrawMode}
+              title="Draw on page"
+            >
+              ✏️
+            </ToolButton>
+          )}
+          {isCanvasMode && !isFocusMode && (
+            <ToolButton
+              themeClasses={themeClasses}
+              onClick={handleExport}
+              disabled={isExporting}
+              title="Export annotated PDF"
+            >
+              {isExporting ? '…' : '⬇️'}
+            </ToolButton>
+          )}
+          {!isFocusMode && (
+            <ToolButton
+              themeClasses={themeClasses}
+              onClick={() => setIsAskAIOpen((v) => !v)}
+              active={isAskAIOpen}
+              title="Ask AI about this book"
+            >
+              💬
+            </ToolButton>
+          )}
+          <ToolButton
+            themeClasses={themeClasses}
+            onClick={toggleFocusMode}
+            title={isFocusMode ? 'Exit fullscreen' : 'Fullscreen reading mode'}
           >
-            Aa
-          </button>
-        )}
-        {isCanvasMode && !isFocusMode && (
-          <button
-            onClick={handleExport}
-            disabled={isExporting}
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover} disabled:opacity-50`}
-            title="Export annotated PDF"
-          >
-            {isExporting ? '…' : '⬇️'}
-          </button>
-        )}
-        {isCanvasMode && !isFocusMode && (
-          <button
-            onClick={() => {
-              setIsDrawMode((v) => !v);
-              setIsSelectMode(false);
-            }}
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${
-              isDrawMode ? themeClasses.active : themeClasses.hover
-            }`}
-            title="Draw on page"
-          >
-            ✏️
-          </button>
-        )}
-        {!isFocusMode && (
-          <button
-            onClick={() => setIsAskAIOpen((v) => !v)}
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
-            title="Ask AI about this book"
-          >
-            💬
-          </button>
-        )}
-        <button
-          onClick={toggleFocusMode}
-          className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center border ${themeClasses.border} border-opacity-30 ${themeClasses.hover}`}
-          title={isFocusMode ? 'Exit fullscreen' : 'Fullscreen reading mode'}
-        >
-          {isFocusMode ? '✕' : '⛶'}
-        </button>
+            {isFocusMode ? '✕' : '⛶'}
+          </ToolButton>
+        </div>
       </div>
 
-      {/* Notes -- hidden in focus mode */}
+      {/* Notes -- collapsible, hidden in focus mode */}
       {!isFocusMode && (
-        <div className={`px-4 py-3 md:px-8 md:py-4 border-b ${themeClasses.border} border-opacity-20 shrink-0`}>
-          <label className="block text-xs font-semibold uppercase opacity-60 mb-2 tracking-wider">
-            Notes
-          </label>
-          <textarea
-            key={activeSection.id}
-            value={noteValue}
-            onChange={(e) => onNoteChange(e.target.value)}
-            placeholder="Jot down thoughts on this section..."
-            rows={3}
-            className={`w-full px-3 py-2 rounded-lg text-sm resize-y bg-transparent border ${themeClasses.border} border-opacity-30 focus:outline-none focus:ring-1 focus:ring-current`}
-          />
+        <div className={`border-b ${themeClasses.border} ${themeClasses.sidebg} shrink-0`}>
+          <button
+            onClick={() => setNotesOpen((v) => !v)}
+            className={`w-full px-4 md:px-6 py-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider ${themeClasses.hover}`}
+          >
+            <span className="flex items-center gap-2">
+              📝 Notes
+              {!notesOpen && noteValue.trim() && (
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+              )}
+            </span>
+            <span className="opacity-50">{notesOpen ? '▾' : '▸'}</span>
+          </button>
+          {notesOpen && (
+            <div className="px-4 md:px-6 pb-3">
+              <textarea
+                key={activeSection.id}
+                value={noteValue}
+                onChange={(e) => onNoteChange(e.target.value)}
+                placeholder="Jot down thoughts on this page…"
+                rows={3}
+                className={`w-full px-3 py-2 rounded-xl text-sm resize-y ${themeClasses.bg} border ${themeClasses.border} focus:outline-none focus:ring-2 focus:ring-indigo-500/40`}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -685,7 +786,7 @@ export default function ContentPanel({
       <div
         ref={contentAreaRef}
         className={`flex-1 overflow-hidden relative ${
-          isCanvasMode ? (isFocusMode ? 'bg-white' : 'bg-black bg-opacity-5') : ''
+          isCanvasMode ? (isFocusMode ? 'bg-white' : themeClasses.backdrop) : ''
         }`}
       >
         {isCanvasMode ? (
@@ -697,7 +798,10 @@ export default function ContentPanel({
             limitToBounds={false}
             centerOnInit
             doubleClick={{ disabled: true }}
-            panning={{ disabled: isDrawMode || isSelectMode }}
+            panning={{
+              disabled: isDrawMode || (isSelectMode && isCoarsePointer),
+              excluded: ['selectable-text'],
+            }}
             pinch={{ disabled: isDrawMode }}
             wheel={{ disabled: isDrawMode }}
             onTransform={(_, state) => setZoomLevel(state.scale)}
@@ -758,7 +862,7 @@ export default function ContentPanel({
                 <div
                   key={index}
                   onClick={() => onLineClick(index)}
-                  className={`py-2 px-3 mb-2 rounded cursor-pointer transition duration-200 ${
+                  className={`py-2 px-3 mb-2 rounded-lg cursor-pointer transition duration-200 ${
                     highlightedLines.has(index) ? `${themeClasses.active} font-medium` : themeClasses.line
                   }`}
                 >
@@ -770,6 +874,17 @@ export default function ContentPanel({
           </div>
         )}
 
+        {/* Copy pill -- appears whenever text is selected in select mode */}
+        {isSelectMode && selectedText && (
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={handleCopySelection}
+            className={`absolute bottom-28 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full text-sm font-semibold shadow-xl ${themeClasses.button}`}
+          >
+            {copied ? '✓ Copied' : `Copy ${selectedText.length} characters`}
+          </button>
+        )}
+
         {isDrawMode && isCanvasMode && (
           <div
             ref={toolbarRef}
@@ -778,7 +893,7 @@ export default function ContentPanel({
                 ? { position: 'absolute', left: toolbarPos.x, top: toolbarPos.y }
                 : { position: 'absolute', top: '1rem', left: '50%', transform: 'translateX(-50%)' }
             }
-            className={`flex items-center gap-1 px-2 py-2 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg z-20 flex-wrap justify-center max-w-[95%]`}
+            className={`flex items-center gap-1 px-2 py-2 rounded-2xl border ${themeClasses.border} ${themeClasses.sidebg} shadow-xl z-20 flex-wrap justify-center max-w-[95%]`}
           >
             <button
               onPointerDown={handleToolbarDragStart}
@@ -794,21 +909,21 @@ export default function ContentPanel({
             <div className="w-px h-5 bg-current opacity-20 mx-1" />
             <button
               onClick={() => setDrawTool('pen')}
-              className={`w-8 h-8 rounded-full flex items-center justify-center ${drawTool === 'pen' ? themeClasses.active : themeClasses.hover}`}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center ${drawTool === 'pen' ? themeClasses.active : themeClasses.hover}`}
               title="Pen"
             >
               ✏️
             </button>
             <button
               onClick={() => setDrawTool('eraser')}
-              className={`w-8 h-8 rounded-full flex items-center justify-center ${drawTool === 'eraser' ? themeClasses.active : themeClasses.hover}`}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center ${drawTool === 'eraser' ? themeClasses.active : themeClasses.hover}`}
               title="Eraser"
             >
               🧽
             </button>
             <button
               onClick={() => setDrawTool('text')}
-              className={`w-8 h-8 rounded-full flex items-center justify-center ${drawTool === 'text' ? themeClasses.active : themeClasses.hover}`}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center ${drawTool === 'text' ? themeClasses.active : themeClasses.hover}`}
               title="Text"
             >
               🔤
@@ -818,7 +933,9 @@ export default function ContentPanel({
               <button
                 key={c}
                 onClick={() => setDrawColor(c)}
-                className={`w-6 h-6 rounded-full border-2 ${drawColor === c ? 'border-current' : 'border-transparent'}`}
+                className={`w-6 h-6 rounded-full border-2 transition ${
+                  drawColor === c ? 'border-current scale-110' : 'border-transparent'
+                }`}
                 style={{ backgroundColor: c }}
                 title="Color"
               />
@@ -828,7 +945,7 @@ export default function ContentPanel({
               <button
                 key={w}
                 onClick={() => setDrawWidth(w)}
-                className={`w-8 h-8 rounded-full flex items-center justify-center ${drawWidth === w ? themeClasses.active : themeClasses.hover}`}
+                className={`w-8 h-8 rounded-lg flex items-center justify-center ${drawWidth === w ? themeClasses.active : themeClasses.hover}`}
                 title={`Width ${w}`}
               >
                 <span
@@ -846,7 +963,7 @@ export default function ContentPanel({
             <button
               onClick={undoAnnotation}
               disabled={!canUndo}
-              className={`w-8 h-8 rounded-full flex items-center justify-center ${canUndo ? themeClasses.hover : 'opacity-30 cursor-not-allowed'}`}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center ${canUndo ? themeClasses.hover : 'opacity-30 cursor-not-allowed'}`}
               title="Undo"
             >
               ↶
@@ -854,27 +971,50 @@ export default function ContentPanel({
             <button
               onClick={redoAnnotation}
               disabled={!canRedo}
-              className={`w-8 h-8 rounded-full flex items-center justify-center ${canRedo ? themeClasses.hover : 'opacity-30 cursor-not-allowed'}`}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center ${canRedo ? themeClasses.hover : 'opacity-30 cursor-not-allowed'}`}
               title="Redo"
             >
               ↷
             </button>
           </div>
         )}
+
+        {/* Floating zoom control */}
+        <div
+          className={`absolute bottom-4 right-4 flex items-center gap-0.5 p-1 rounded-full border ${themeClasses.border} ${themeClasses.sidebg} shadow-lg text-sm z-10`}
+        >
+          <button
+            onClick={() => adjustZoom(-ZOOM_STEP)}
+            className={`w-8 h-8 rounded-full flex items-center justify-center ${themeClasses.hover}`}
+            title="Zoom out"
+          >
+            −
+          </button>
+          <button
+            onClick={resetZoom}
+            className={`px-2 min-w-[3.2rem] text-center text-xs font-semibold rounded-full ${themeClasses.hover} h-8`}
+            title="Reset zoom"
+          >
+            {Math.round(zoomLevel * 100)}%
+          </button>
+          <button
+            onClick={() => adjustZoom(ZOOM_STEP)}
+            className={`w-8 h-8 rounded-full flex items-center justify-center ${themeClasses.hover}`}
+            title="Zoom in"
+          >
+            +
+          </button>
+        </div>
       </div>
 
-      {/* Section Navigation */}
+      {/* Page navigation */}
       <div
-        className={`px-4 py-2.5 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 shrink-0 flex items-center gap-2`}
+        className={`px-3 py-2.5 md:px-6 md:py-3 border-t ${themeClasses.border} ${themeClasses.sidebg} shrink-0 flex items-center gap-2`}
       >
         <button
           onClick={() => onNavigateSection('prev')}
           disabled={!hasPrev}
-          className={`flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition min-w-0 ${
-            hasPrev
-              ? `${themeClasses.hover} border ${themeClasses.border} border-opacity-30`
-              : 'opacity-30 cursor-not-allowed'
-          }`}
+          className={navButtonClass(hasPrev)}
         >
           <span className="shrink-0">←</span>
           <span className="truncate">{prevSectionTitle || 'Previous'}</span>
@@ -882,56 +1022,17 @@ export default function ContentPanel({
         <button
           onClick={() => onNavigateSection('next')}
           disabled={!hasNext}
-          className={`flex-1 flex items-center justify-end gap-2 px-3 py-2 rounded-lg text-sm font-medium transition min-w-0 ${
-            hasNext
-              ? `${themeClasses.hover} border ${themeClasses.border} border-opacity-30`
-              : 'opacity-30 cursor-not-allowed'
-          }`}
+          className={`${navButtonClass(hasNext)} justify-end`}
         >
           <span className="truncate">{nextSectionTitle || 'Next'}</span>
           <span className="shrink-0">→</span>
         </button>
       </div>
 
-      {/* Floating zoom control */}
-      <div
-        className={`absolute bottom-20 right-4 md:bottom-24 md:right-6 flex items-center gap-1 px-2 py-1 rounded-full border ${themeClasses.border} border-opacity-30 ${themeClasses.sidebg} shadow-lg text-sm z-10`}
-      >
-        <button
-          onClick={() => adjustZoom(-ZOOM_STEP)}
-          className={`w-9 h-9 md:w-7 md:h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`}
-          title="Zoom out"
-        >
-          −
-        </button>
-        <button
-          onClick={resetZoom}
-          className={`px-2 min-w-[3.2rem] text-center rounded ${themeClasses.hover}`}
-          title="Reset zoom"
-        >
-          {Math.round(zoomLevel * 100)}%
-        </button>
-        <button
-          onClick={() => adjustZoom(ZOOM_STEP)}
-          className={`w-9 h-9 md:w-7 md:h-7 rounded-full flex items-center justify-center ${themeClasses.hover}`}
-          title="Zoom in"
-        >
-          +
-        </button>
-      </div>
-
-      {/* Footer Stats -- hidden in focus mode */}
-      {!isFocusMode && (
-        <div className={`px-4 py-2 md:px-8 md:py-3 border-t ${themeClasses.border} border-opacity-20 text-xs md:text-sm opacity-60 shrink-0`}>
-          {isCanvasMode ? (
-            <span>Spans {activeSection.crops!.length} page(s)</span>
-          ) : (
-            <>
-              <span>{lines.length} lines</span>
-              <span className="mx-2">•</span>
-              <span>{highlightedLines.size} highlighted</span>
-            </>
-          )}
+      {/* Footer stats -- text mode only */}
+      {!isCanvasMode && !isFocusMode && (
+        <div className={`px-4 md:px-6 py-2 border-t ${themeClasses.border} text-xs ${themeClasses.muted} shrink-0`}>
+          {lines.length} lines · {highlightedLines.size} highlighted
         </div>
       )}
 

@@ -23,12 +23,45 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-html, body {
-  touch-action: pan-y;
+/* Slim, unobtrusive scrollbars everywhere */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.55);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fade-up 0.4s ease both;
+}
+
+/* ---- AI chat markdown ---- */
 .ai-markdown p {
   margin-bottom: 0.5rem;
 }
@@ -116,19 +149,7 @@ html, body {
   overflow-y: hidden;
 }
 
-.textLayer {
-  position: absolute;
-  text-align: initial;
-  overflow: hidden;
-  line-height: 1;
-  -webkit-text-size-adjust: none;
-  text-size-adjust: none;
-  forced-color-adjust: none;
-  z-index: 1;
-  user-select: text !important;
-  -webkit-user-select: text !important;
-}
-
+/* ---- PDF selectable text layer ---- */
 .textLayer {
   position: absolute;
   text-align: initial;

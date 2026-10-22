@@ -29,62 +29,62 @@ export function useTheme() {
   return context;
 }
 
+const LIGHT = {
+  bg: 'bg-slate-50',
+  text: 'text-slate-900',
+  sidebg: 'bg-white',
+  sidetext: 'text-slate-700',
+  border: 'border-slate-200',
+  hover: 'hover:bg-slate-100',
+  button:
+    'bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-sm hover:from-indigo-600 hover:to-violet-600',
+  active: 'bg-indigo-50 text-indigo-700',
+  line: 'hover:bg-amber-50',
+  card: 'bg-white',
+  muted: 'text-slate-500',
+  backdrop: 'bg-slate-200/70',
+};
+
+const DARK = {
+  bg: 'bg-[#0e1015]',
+  text: 'text-slate-200',
+  sidebg: 'bg-[#14171f]',
+  sidetext: 'text-slate-300',
+  border: 'border-white/10',
+  hover: 'hover:bg-white/5',
+  button:
+    'bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-sm hover:from-indigo-400 hover:to-violet-400',
+  active: 'bg-indigo-500/20 text-indigo-200',
+  line: 'hover:bg-white/5',
+  card: 'bg-[#1a1e29]',
+  muted: 'text-slate-400',
+  backdrop: 'bg-black/40',
+};
+
+const COLORFUL = {
+  bg: 'bg-amber-50',
+  text: 'text-stone-800',
+  sidebg: 'bg-orange-50',
+  sidetext: 'text-stone-700',
+  border: 'border-orange-200',
+  hover: 'hover:bg-orange-100',
+  button:
+    'bg-gradient-to-r from-orange-500 to-rose-500 text-white shadow-sm hover:from-orange-600 hover:to-rose-600',
+  active: 'bg-orange-100 text-orange-900',
+  line: 'hover:bg-orange-100',
+  card: 'bg-white/70',
+  muted: 'text-stone-500',
+  backdrop: 'bg-orange-200/50',
+};
+
 export const getThemeClasses = (theme: Theme) => {
   switch (theme) {
-    case 'light':
-      return {
-        bg: 'bg-white',
-        text: 'text-gray-900',
-        sidebg: 'bg-gray-50',
-        sidetext: 'text-gray-700',
-        border: 'border-gray-200',
-        hover: 'hover:bg-gray-100',
-        button: 'bg-blue-500 hover:bg-blue-600 text-white',
-        active: 'bg-blue-100 text-blue-900',
-        line: 'hover:bg-yellow-100',
-      };
     case 'dark':
-      return {
-        // Softer than pure black/white: near-black bg, off-white text.
-        // Cuts contrast from ~15.8:1 to a still-highly-legible ~12:1,
-        // reducing glare during sustained reading.
-        bg: 'bg-[#1a1b1e]',
-        text: 'text-[#dcdde0]',
-        sidebg: 'bg-[#212226]',
-        sidetext: 'text-[#b8bac0]',
-        border: 'border-[#33343a]',
-        hover: 'hover:bg-[#2a2b30]',
-        button: 'bg-blue-600 hover:bg-blue-500 text-white',
-        active: 'bg-blue-500 bg-opacity-20 text-blue-200',
-        line: 'hover:bg-[#2a2b30]',
-      };
+      return DARK;
     case 'colorful':
-      return {
-        // Saturation concentrated in the button and active state rather
-        // than smeared across bg/sidebar/hover; body text is a neutral
-        // warm-gray instead of a saturated color, so it stays legible
-        // against the warm background instead of both competing.
-        bg: 'bg-orange-50',
-        text: 'text-stone-800',
-        sidebg: 'bg-orange-100',
-        sidetext: 'text-stone-700',
-        border: 'border-orange-200',
-        hover: 'hover:bg-orange-200',
-        button: 'bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white',
-        active: 'bg-orange-200 text-orange-900',
-        line: 'hover:bg-orange-200',
-      };
+      return COLORFUL;
+    case 'light':
     default:
-      return {
-        bg: 'bg-white',
-        text: 'text-gray-900',
-        sidebg: 'bg-gray-50',
-        sidetext: 'text-gray-700',
-        border: 'border-gray-200',
-        hover: 'hover:bg-gray-100',
-        button: 'bg-blue-500 hover:bg-blue-600 text-white',
-        active: 'bg-blue-100 text-blue-900',
-        line: 'hover:bg-yellow-100',
-      };
+      return LIGHT;
   }
 };
