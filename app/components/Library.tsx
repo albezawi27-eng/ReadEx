@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
+import { useTheme, getThemeClasses, THEME_OPTIONS } from '@/app/context/ThemeContext';
 import { getAllBooks, getProgress, StoredBook } from '@/app/utils/db';
 import { exportLibrary, importLibrary } from '@/app/utils/backup';
 import { exportNotesAsFlashcardPdf } from '@/app/utils/flashcards';
 import { downloadBlob } from '@/app/utils/pdfExport';
+import { useSoundEnabled } from '@/app/utils/sounds';
 
 interface LibraryEntry extends StoredBook {
   completedCount: number;
@@ -36,6 +37,14 @@ const COVER_GRADIENTS = [
   'from-amber-500 to-orange-500',
 ];
 
+// Fixed positions (not random) so server and browser render identically.
+const PETALS = Array.from({ length: 14 }, (_, i) => ({
+  left: (i * 37 + 11) % 100,
+  delay: (i * 1.7) % 12,
+  duration: 11 + ((i * 5) % 8),
+  size: 14 + ((i * 7) % 14),
+}));
+
 function coverGradient(id: string): string {
   let sum = 0;
   for (let i = 0; i < id.length; i++) sum += id.charCodeAt(i);
@@ -55,8 +64,9 @@ export default function Library({
   isProcessing,
   refreshKey,
 }: LibraryProps) {
-  const { theme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const themeClasses = getThemeClasses(theme);
+  const [soundOn, setSoundOn] = useSoundEnabled();
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [uploadError, setUploadError] = useState('');
@@ -64,13 +74,6 @@ export default function Library({
   const [toolsBusy, setToolsBusy] = useState<'export' | 'import' | 'flashcards' | null>(null);
   const [toolsMessage, setToolsMessage] = useState('');
   const [localRefreshKey, setLocalRefreshKey] = useState(0);
-
-  const heroGradient =
-    theme === 'dark'
-      ? 'bg-gradient-to-b from-[#1a1d2e] via-[#0e1015] to-[#0e1015]'
-      : theme === 'colorful'
-        ? 'bg-gradient-to-b from-orange-100 via-amber-50 to-amber-50'
-        : 'bg-gradient-to-b from-indigo-50 via-slate-50 to-slate-50';
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +101,14 @@ export default function Library({
       cancelled = true;
     };
   }, [refreshKey, localRefreshKey]);
+
+  // A pending delete confirmation expires on its own, so a stray tap on a
+  // touchscreen (where there is no mouse-leave) can't leave it armed.
+  useEffect(() => {
+    if (!pendingDeleteId) return;
+    const timer = setTimeout(() => setPendingDeleteId(null), 3000);
+    return () => clearTimeout(timer);
+  }, [pendingDeleteId]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -184,8 +195,27 @@ export default function Library({
   const toolButtonClass = `text-xs font-medium px-3 py-2 rounded-lg border ${themeClasses.border} ${themeClasses.card} ${themeClasses.hover} transition disabled:opacity-50`;
 
   return (
-    <div className={`w-full h-screen ${heroGradient} ${themeClasses.text} flex flex-col overflow-y-auto`}>
-      {/* Hidden inputs shared by the buttons below */}
+    <div className={`relative w-full h-screen ${themeClasses.hero} ${themeClasses.text} flex flex-col overflow-y-auto`}>
+      {/* Anime theme: drifting sakura petals behind the content */}
+      {theme === 'anime' && (
+        <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden z-0">
+          {PETALS.map((p, i) => (
+            <span
+              key={i}
+              className="petal"
+              style={{
+                left: `${p.left}%`,
+                fontSize: p.size,
+                animationDuration: `${p.duration}s`,
+                animationDelay: `-${p.delay}s`,
+              }}
+            >
+              🌸
+            </span>
+          ))}
+        </div>
+      )}
+
       <input
         id="library-upload-input"
         type="file"
@@ -202,23 +232,53 @@ export default function Library({
         onChange={handleImportFileSelected}
       />
 
-      <div className="max-w-5xl w-full mx-auto px-6 md:px-8 pt-12 pb-6">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-3xl shadow-lg shadow-indigo-500/30">
-            📖
+      <div className="relative z-10 max-w-5xl w-full mx-auto px-6 md:px-8 pt-10 pb-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div
+              className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${themeClasses.accent} flex items-center justify-center text-3xl shadow-lg`}
+            >
+              📖
+            </div>
+            <div>
+              <h1
+                className={`text-4xl font-extrabold tracking-tight bg-gradient-to-r ${themeClasses.accent} bg-clip-text text-transparent`}
+              >
+                ReadEx
+              </h1>
+              <p className={`text-sm mt-0.5 ${themeClasses.muted}`}>
+                Read, annotate, and understand your PDFs — with AI built in.
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-4xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-500 to-violet-500 bg-clip-text text-transparent">
-              ReadEx
-            </h1>
-            <p className={`text-sm mt-0.5 ${themeClasses.muted}`}>
-              Read, annotate, and understand your PDFs — with AI built in.
-            </p>
+
+          <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-0.5 p-1 rounded-xl border ${themeClasses.border} ${themeClasses.card}`}>
+              {THEME_OPTIONS.map((opt) => (
+                <button
+                  key={opt.name}
+                  onClick={() => setTheme(opt.name)}
+                  title={`${opt.label} theme`}
+                  className={`w-9 h-9 rounded-lg flex items-center justify-center text-base transition ${
+                    theme === opt.name ? `${themeClasses.active} shadow-sm` : themeClasses.hover
+                  }`}
+                >
+                  {opt.icon}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setSoundOn(!soundOn)}
+              title={soundOn ? 'Sounds on — click to mute' : 'Sounds off — click to unmute'}
+              className={`w-11 h-11 rounded-xl border ${themeClasses.border} ${themeClasses.card} ${themeClasses.hover} flex items-center justify-center text-base transition`}
+            >
+              {soundOn ? '🔊' : '🔇'}
+            </button>
           </div>
         </div>
       </div>
 
-      <div className="max-w-5xl w-full mx-auto px-6 md:px-8 pb-12 flex-1">
+      <div className="relative z-10 max-w-5xl w-full mx-auto px-6 md:px-8 pb-12 flex-1">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <h2 className="text-lg font-semibold">My Library</h2>
           <label
@@ -246,7 +306,7 @@ export default function Library({
         {toolsMessage && <div className={`mb-5 text-sm ${themeClasses.muted}`}>{toolsMessage}</div>}
 
         {uploadError && (
-          <div className="mb-5 p-3 rounded-xl text-sm bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/20">
+          <div className="mb-5 p-3 rounded-xl text-sm bg-red-500/10 text-red-600 border border-red-500/20">
             ⚠️ {uploadError}
           </div>
         )}
@@ -291,10 +351,11 @@ export default function Library({
               return (
                 <div
                   key={entry.id}
+                  data-click-sound
                   onClick={() => onOpenBook(entry.id)}
                   onMouseLeave={() => isConfirmingDelete && setPendingDeleteId(null)}
                   style={{ animationDelay: `${i * 60}ms` }}
-                  className={`fade-up group relative rounded-2xl border ${themeClasses.border} ${themeClasses.card} overflow-hidden cursor-pointer transition hover:-translate-y-0.5 hover:shadow-xl`}
+                  className={`fade-up relative rounded-2xl border ${themeClasses.border} ${themeClasses.card} overflow-hidden cursor-pointer transition hover:-translate-y-0.5 hover:shadow-xl`}
                 >
                   <div
                     className={`h-24 bg-gradient-to-br ${coverGradient(
@@ -304,16 +365,17 @@ export default function Library({
                     📘
                   </div>
 
+                  {/* Always visible, solid red, white ring so it stands out on any cover */}
                   <button
                     onClick={(e) => handleDeleteClick(e, entry.id)}
-                    className={`absolute top-2 right-2 text-xs px-2 py-1 rounded-full transition ${
+                    className={`absolute top-2 right-2 px-3 py-1.5 rounded-full text-xs font-bold text-white shadow-lg ring-2 ring-white transition ${
                       isConfirmingDelete
-                        ? 'bg-red-500 text-white'
-                        : 'bg-black/25 text-white opacity-0 group-hover:opacity-100 hover:bg-red-500'
+                        ? 'bg-red-700 animate-pulse'
+                        : 'bg-red-600 hover:bg-red-700'
                     }`}
-                    title={isConfirmingDelete ? 'Click again to confirm' : 'Delete book'}
+                    title={isConfirmingDelete ? 'Tap again to delete for good' : 'Delete this book'}
                   >
-                    {isConfirmingDelete ? 'Confirm delete?' : '🗑️'}
+                    {isConfirmingDelete ? '⚠ Tap again to confirm' : '🗑 Delete'}
                   </button>
 
                   <div className="p-4">

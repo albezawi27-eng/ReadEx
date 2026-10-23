@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
+import { useTheme, getThemeClasses, THEME_OPTIONS } from '@/app/context/ThemeContext';
 import { extractPDFText, PDFSection } from '@/app/utils/pdfParser';
+import { useSoundEnabled } from '@/app/utils/sounds';
 
 interface Section {
   id: string;
@@ -21,12 +22,6 @@ interface SidebarProps {
   showOnMobile: boolean;
 }
 
-const THEME_OPTIONS = [
-  { name: 'light', label: 'Light', icon: '☀️' },
-  { name: 'dark', label: 'Dark', icon: '🌙' },
-  { name: 'colorful', label: 'Warm', icon: '🎨' },
-] as const;
-
 export default function Sidebar({
   sections,
   activeSection,
@@ -39,6 +34,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const { theme, setTheme } = useTheme();
   const themeClasses = getThemeClasses(theme);
+  const [soundOn, setSoundOn] = useSoundEnabled();
   const [uploadError, setUploadError] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
@@ -99,7 +95,9 @@ export default function Sidebar({
       {/* Brand + actions */}
       <div className="p-4 pb-3">
         <div className="flex items-center gap-2.5 mb-4">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-lg shadow-md shadow-indigo-500/25">
+          <div
+            className={`w-9 h-9 rounded-xl bg-gradient-to-br ${themeClasses.accent} flex items-center justify-center text-lg shadow-md`}
+          >
             📖
           </div>
           <span className="text-lg font-extrabold tracking-tight">ReadEx</span>
@@ -131,7 +129,7 @@ export default function Sidebar({
         </div>
 
         {uploadError && (
-          <div className="mt-3 p-2.5 rounded-lg text-xs bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/20">
+          <div className="mt-3 p-2.5 rounded-lg text-xs bg-red-500/10 text-red-600 border border-red-500/20">
             ⚠️ {uploadError}
           </div>
         )}
@@ -147,7 +145,7 @@ export default function Sidebar({
         </div>
         <div className="h-1.5 rounded-full bg-current/10 overflow-hidden">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
+            className={`h-full rounded-full bg-gradient-to-r ${themeClasses.accent} transition-all duration-500`}
             style={{ width: `${pct}%` }}
           />
         </div>
@@ -193,9 +191,9 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* Theme switcher */}
+      {/* Theme + sound */}
       <div className={`p-3 border-t ${themeClasses.border}`}>
-        <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl border ${themeClasses.border} ${themeClasses.bg}`}>
+        <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl border ${themeClasses.border}`}>
           {THEME_OPTIONS.map((opt) => (
             <button
               key={opt.name}
@@ -209,6 +207,13 @@ export default function Sidebar({
             </button>
           ))}
         </div>
+        <button
+          onClick={() => setSoundOn(!soundOn)}
+          className={`mt-2 w-full py-1.5 text-xs rounded-lg font-semibold border ${themeClasses.border} ${themeClasses.hover} transition`}
+          title="Turn click and page-turn sounds on or off"
+        >
+          {soundOn ? '🔊 Sounds on' : '🔇 Sounds off'}
+        </button>
       </div>
     </div>
   );

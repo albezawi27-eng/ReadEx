@@ -1,5 +1,6 @@
 'use client';
-
+import SoundEffects from '@/app/components/SoundEffects';
+import { playPageTurn } from '@/app/utils/sounds';
 import { useEffect, useRef, useState } from 'react';
 import { ThemeProvider, useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import Sidebar from '@/app/components/Sidebar';
@@ -174,6 +175,7 @@ function HomeContent() {
   };
 
   const handleSectionSelect = (id: string) => {
+      playPageTurn();
     setActiveSectionId(id);
     setHighlightedLines(new Set());
     setMobileShowSidebar(false);
@@ -285,6 +287,7 @@ function HomeContent() {
 export default function Home() {
   return (
     <ThemeProvider>
+      <SoundEffects />
       <HomeContent />
     </ThemeProvider>
   );
