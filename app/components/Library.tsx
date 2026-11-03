@@ -45,6 +45,14 @@ const PETALS = Array.from({ length: 14 }, (_, i) => ({
   size: 14 + ((i * 7) % 14),
 }));
 
+const STARS = Array.from({ length: 40 }, (_, i) => ({
+  left: (i * 53 + 7) % 100,
+  top: (i * 29 + 13) % 100,
+  size: 1 + (i % 3),
+  delay: (i * 0.9) % 7,
+  duration: 3 + (i % 5),
+}));
+
 function coverGradient(id: string): string {
   let sum = 0;
   for (let i = 0; i < id.length; i++) sum += id.charCodeAt(i);
@@ -212,6 +220,24 @@ export default function Library({
             >
               🌸
             </span>
+          ))}
+        </div>
+      )}
+      {theme === 'dark' && (
+        <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden z-0">
+          {STARS.map((s, i) => (
+            <span
+              key={i}
+              className="star"
+              style={{
+                left: `${s.left}%`,
+                top: `${s.top}%`,
+                width: s.size,
+                height: s.size,
+                animationDuration: `${s.duration}s`,
+                animationDelay: `-${s.delay}s`,
+              }}
+            />
           ))}
         </div>
       )}

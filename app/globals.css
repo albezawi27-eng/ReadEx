@@ -197,3 +197,22 @@ body {
   top: 0;
   animation: petal-fall linear infinite;
 }
+/* ---- Dark theme: twinkling stars ---- */
+@keyframes star-twinkle {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.2);
+  }
+}
+.star {
+  position: absolute;
+  border-radius: 9999px;
+  background: white;
+  box-shadow: 0 0 6px 1px rgba(167, 139, 250, 0.6);
+  animation: star-twinkle ease-in-out infinite;
+}

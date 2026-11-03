@@ -6,7 +6,7 @@ import { ThemeProvider, useTheme, getThemeClasses } from '@/app/context/ThemeCon
 import Sidebar from '@/app/components/Sidebar';
 import ContentPanel from '@/app/components/ContentPanel';
 import Library from '@/app/components/Library';
-import { extractPDFText, PDFSection, PageCrop } from '@/app/utils/pdfParser';
+import { extractPDFText, loadTopicsForBook, PDFSection, PageCrop, Topic } from '@/app/utils/pdfParser';
 import {
   generateBookId,
   saveBook,
@@ -44,6 +44,37 @@ function HomeContent() {
   const [highlightedLines, setHighlightedLines] = useState<Set<number>>(new Set());
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [mobileShowSidebar, setMobileShowSidebar] = useState(true);
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [topicsStatus, setTopicsStatus] = useState<'loading' | 'ready' | 'none'>('none');
+
+  // Topics load in the background so opening a book is never slowed down.
+  useEffect(() => {
+    if (!activeBookId || !pdfFile) {
+      setTopics([]);
+      setTopicsStatus('none');
+      return;
+    }
+
+    let cancelled = false;
+    setTopics([]);
+    setTopicsStatus('loading');
+
+    loadTopicsForBook(activeBookId, pdfFile)
+      .then((result) => {
+        if (cancelled) return;
+        setTopics(result);
+        setTopicsStatus(result.length >= 2 ? 'ready' : 'none');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTopics([]);
+        setTopicsStatus('none');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBookId, pdfFile]);
 
   const noteSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -219,7 +250,25 @@ function HomeContent() {
       return next;
     });
   };
-
+  // Marks or unmarks many pages at once (used by the Topics view).
+  const handleProgressSet = (sectionIds: string[], done: boolean) => {
+    setProgress((prev) => {
+      const next = new Set(prev);
+      for (const id of sectionIds) {
+        if (done) next.add(id);
+        else next.delete(id);
+      }
+      if (activeBookId) {
+        saveProgress({
+          bookId: activeBookId,
+          completedSectionKeys: Array.from(next),
+          totalSections: allSections.length,
+          lastReadSectionKey: activeSectionId ?? undefined,
+        });
+      }
+      return next;
+    });
+  };
   const handleLineClick = (lineIndex: number) => {
     const newHighlighted = new Set(highlightedLines);
     if (newHighlighted.has(lineIndex)) {
@@ -254,12 +303,16 @@ function HomeContent() {
         />
       ) : (
         <div className="flex flex-col md:flex-row w-full h-screen">
-          <Sidebar
+           <Sidebar
+            key={activeBookId ?? 'none'}
             sections={allSections}
             activeSection={activeSectionId}
             onSectionSelect={handleSectionSelect}
             progress={progress}
             onProgressToggle={handleProgressToggle}
+            onProgressSet={handleProgressSet}
+            topics={topics}
+            topicsStatus={topicsStatus}
             onPDFExtracted={handlePDFExtracted}
             onBackToLibrary={handleBackToLibrary}
             showOnMobile={mobileShowSidebar}

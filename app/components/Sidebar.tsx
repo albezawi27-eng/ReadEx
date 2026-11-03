@@ -1,15 +1,19 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme, getThemeClasses, THEME_OPTIONS } from '@/app/context/ThemeContext';
-import { extractPDFText, PDFSection } from '@/app/utils/pdfParser';
+import { extractPDFText, PDFSection, Topic } from '@/app/utils/pdfParser';
 import { useSoundEnabled } from '@/app/utils/sounds';
+import { getSetting, setSetting } from '@/app/utils/db';
 
 interface Section {
   id: string;
   title: string;
   content: string;
+  crops?: { pageNum: number }[];
 }
+
+type SidebarMode = 'pages' | 'topics';
 
 interface SidebarProps {
   sections: Section[];
@@ -17,6 +21,9 @@ interface SidebarProps {
   onSectionSelect: (id: string) => void;
   progress: Set<string>;
   onProgressToggle: (id: string) => void;
+  onProgressSet?: (ids: string[], done: boolean) => void;
+  topics?: Topic[];
+  topicsStatus?: 'loading' | 'ready' | 'none';
   onPDFExtracted?: (sections: PDFSection[], file?: File) => Promise<void>;
   onBackToLibrary?: () => void;
   showOnMobile: boolean;
@@ -28,6 +35,9 @@ export default function Sidebar({
   onSectionSelect,
   progress,
   onProgressToggle,
+  onProgressSet,
+  topics = [],
+  topicsStatus = 'none',
   onPDFExtracted,
   onBackToLibrary,
   showOnMobile,
@@ -37,17 +47,114 @@ export default function Sidebar({
   const [soundOn, setSoundOn] = useSoundEnabled();
   const [uploadError, setUploadError] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
+  const [mode, setMode] = useState<SidebarMode>('pages');
+  const [modeLoaded, setModeLoaded] = useState(false);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [lastActiveTopic, setLastActiveTopic] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const pendingScrollRef = useRef(false);
 
-  // Keeps the highlighted page visible when it changes via Next/Prev or
-  // when the sidebar is reopened (e.g. back on mobile).
+  // Remembers the Pages / Topics choice between visits.
   useEffect(() => {
-    if (!activeSection || !listRef.current) return;
+    let cancelled = false;
+    getSetting('sidebarMode')
+      .then((value) => {
+        if (cancelled) return;
+        if (value === 'topics' || value === 'pages') setMode(value);
+        setModeLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setModeLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const changeMode = (next: SidebarMode) => {
+    setMode(next);
+    setSetting('sidebarMode', next).catch(() => {});
+  };
+
+  const sectionById = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
+
+  const pageNumById = useMemo(() => {
+    const map = new Map<string, number>();
+    sections.forEach((s, i) => map.set(s.id, s.crops?.[0]?.pageNum ?? i + 1));
+    return map;
+  }, [sections]);
+
+  // Each topic with the ids of the pages inside it.
+  const topicGroups = useMemo(
+    () =>
+      topics.map((topic) => ({
+        topic,
+        ids: sections
+          .filter((s) => {
+            const page = pageNumById.get(s.id) ?? 0;
+            return page >= topic.startPage && page <= topic.endPage;
+          })
+          .map((s) => s.id),
+      })),
+    [topics, sections, pageNumById]
+  );
+
+  const activeTopicIdx = useMemo(() => {
+    if (!activeSection) return null;
+    const idx = topicGroups.findIndex((g) => g.ids.includes(activeSection));
+    return idx === -1 ? null : idx;
+  }, [activeSection, topicGroups]);
+
+  const showTopics = mode === 'topics' && topicsStatus === 'ready' && topicGroups.length > 0;
+
+  // Opens the topic you are reading whenever you move into a new one.
+  if (activeTopicIdx !== lastActiveTopic) {
+    setLastActiveTopic(activeTopicIdx);
+    if (activeTopicIdx !== null) {
+      setExpanded((prev) => new Set(prev).add(activeTopicIdx));
+    }
+  }
+
+  // Keeps the current page visible in the list. Waits (via the pending flag)
+  // until the row actually exists, since a collapsed topic hides its pages.
+  useEffect(() => {
+    pendingScrollRef.current = true;
+  }, [activeSection, showOnMobile, showTopics]);
+
+  useEffect(() => {
+    if (!pendingScrollRef.current || !activeSection || !listRef.current) return;
     const el = listRef.current.querySelector<HTMLElement>(
       `[data-section-id="${CSS.escape(activeSection)}"]`
     );
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [activeSection, showOnMobile]);
+    if (el) {
+      el.scrollIntoView({ block: 'nearest' });
+      pendingScrollRef.current = false;
+    }
+  });
+
+  const toggleExpanded = (idx: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
+  const jumpToTopic = (idx: number, ids: string[]) => {
+    setExpanded((prev) => new Set(prev).add(idx));
+    if (ids[0]) onSectionSelect(ids[0]);
+  };
+
+  const setIdsDone = (ids: string[], done: boolean) => {
+    if (onProgressSet) {
+      onProgressSet(ids, done);
+      return;
+    }
+    ids.forEach((id) => {
+      if (progress.has(id) !== done) onProgressToggle(id);
+    });
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -80,6 +187,39 @@ export default function Sidebar({
     } finally {
       setIsUploading(false);
     }
+  };
+
+  const renderPageRow = (section: Section, compact: boolean) => {
+    const isActive = activeSection === section.id;
+    const isDone = progress.has(section.id);
+    return (
+      <div
+        key={section.id}
+        data-section-id={section.id}
+        onClick={() => onSectionSelect(section.id)}
+        className={`flex items-center gap-2.5 ${
+          compact ? 'px-2 py-1.5' : 'px-2.5 py-2'
+        } rounded-lg cursor-pointer transition ${isActive ? themeClasses.active : themeClasses.hover}`}
+      >
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onProgressToggle(section.id);
+          }}
+          title={isDone ? 'Mark as unread' : 'Mark as read'}
+          className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[11px] leading-none transition ${
+            isDone
+              ? 'bg-emerald-500 border-emerald-500 text-white'
+              : 'border-current opacity-30 hover:opacity-70'
+          }`}
+        >
+          {isDone && '✓'}
+        </button>
+        <span className={`flex-1 text-sm truncate ${isActive ? 'font-semibold' : 'font-medium'}`}>
+          {section.title}
+        </span>
+      </div>
+    );
   };
 
   const total = sections.length;
@@ -153,42 +293,113 @@ export default function Sidebar({
 
       <div className={`border-t ${themeClasses.border}`} />
 
-      {/* Pages list */}
-      <div ref={listRef} className="flex-1 overflow-y-auto p-3">
-        <div className="space-y-0.5">
-          {sections.map((section) => {
-            const isActive = activeSection === section.id;
-            const isDone = progress.has(section.id);
-            return (
-              <div
-                key={section.id}
-                data-section-id={section.id}
-                onClick={() => onSectionSelect(section.id)}
-                className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition ${
-                  isActive ? themeClasses.active : themeClasses.hover
-                }`}
-              >
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onProgressToggle(section.id);
-                  }}
-                  title={isDone ? 'Mark as unread' : 'Mark as read'}
-                  className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[11px] leading-none transition ${
-                    isDone
-                      ? 'bg-emerald-500 border-emerald-500 text-white'
-                      : 'border-current opacity-30 hover:opacity-70'
-                  }`}
-                >
-                  {isDone && '✓'}
-                </button>
-                <span className={`flex-1 text-sm truncate ${isActive ? 'font-semibold' : 'font-medium'}`}>
-                  {section.title}
-                </span>
-              </div>
-            );
-          })}
+      {/* Pages / Topics switch */}
+      <div className="px-3 pt-3">
+        <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl border ${themeClasses.border}`}>
+          {(
+            [
+              { value: 'pages', label: 'Pages', icon: '📄' },
+              { value: 'topics', label: 'Topics', icon: '🗂️' },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => changeMode(opt.value)}
+              className={`py-1.5 text-xs rounded-lg font-semibold transition ${
+                mode === opt.value ? `${themeClasses.active} shadow-sm` : themeClasses.hover
+              }`}
+            >
+              <span className="mr-1">{opt.icon}</span>
+              {opt.label}
+            </button>
+          ))}
         </div>
+        {mode === 'topics' && topicsStatus === 'loading' && (
+          <p className="text-[11px] opacity-60 mt-2 px-1">Detecting topics…</p>
+        )}
+        {mode === 'topics' && topicsStatus === 'none' && (
+          <p className="text-[11px] opacity-60 mt-2 px-1">
+            No topics found in this document — showing pages.
+          </p>
+        )}
+      </div>
+
+      {/* List */}
+      <div ref={listRef} className="flex-1 overflow-y-auto p-3">
+        {modeLoaded &&
+          (showTopics ? (
+            <div>
+              {topicGroups.map((group, idx) => {
+                const { topic, ids } = group;
+                const doneCount = ids.filter((id) => progress.has(id)).length;
+                const allDone = ids.length > 0 && doneCount === ids.length;
+                const partial = doneCount > 0 && !allDone;
+                const isActiveTopic = idx === activeTopicIdx;
+                const isOpen = expanded.has(idx);
+                const rangeLabel =
+                  topic.startPage === topic.endPage
+                    ? `p. ${topic.startPage}`
+                    : `pp. ${topic.startPage}–${topic.endPage}`;
+
+                return (
+                  <div key={`${topic.startPage}-${idx}`} className="mb-1">
+                    <div
+                      onClick={() => jumpToTopic(idx, ids)}
+                      className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition ${
+                        isActiveTopic ? themeClasses.active : themeClasses.hover
+                      }`}
+                    >
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIdsDone(ids, !allDone);
+                        }}
+                        title={allDone ? 'Mark topic as unread' : 'Mark whole topic as read'}
+                        className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[11px] leading-none transition ${
+                          allDone
+                            ? 'bg-emerald-500 border-emerald-500 text-white'
+                            : partial
+                              ? 'border-emerald-500 text-emerald-500'
+                              : 'border-current opacity-30 hover:opacity-70'
+                        }`}
+                      >
+                        {allDone ? '✓' : partial ? '•' : ''}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-sm truncate ${isActiveTopic ? 'font-semibold' : 'font-medium'}`}>
+                          {topic.title}
+                        </div>
+                        <div className="text-[11px] opacity-60">
+                          {rangeLabel} · {doneCount}/{ids.length} read
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleExpanded(idx);
+                        }}
+                        title={isOpen ? 'Hide pages' : 'Show pages'}
+                        className={`shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-xs ${themeClasses.hover}`}
+                      >
+                        {isOpen ? '▾' : '▸'}
+                      </button>
+                    </div>
+
+                    {isOpen && (
+                      <div className={`ml-5 mt-0.5 pl-2 border-l ${themeClasses.border} space-y-0.5`}>
+                        {ids.map((id) => {
+                          const section = sectionById.get(id);
+                          return section ? renderPageRow(section, true) : null;
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="space-y-0.5">{sections.map((section) => renderPageRow(section, false))}</div>
+          ))}
       </div>
 
       {/* Theme + sound */}

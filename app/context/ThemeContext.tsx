@@ -54,22 +54,23 @@ const LIGHT = {
   accent: 'from-indigo-500 to-violet-500',
 };
 
+// Midnight navy with a violet-to-cyan accent and a soft glow at the top.
 const DARK = {
-  bg: 'bg-[#0e1015]',
-  text: 'text-slate-200',
-  sidebg: 'bg-[#14171f]',
+  bg: 'bg-gradient-to-br from-[#0a0c18] via-[#0d1022] to-[#140e2a]',
+  text: 'text-slate-100',
+  sidebg: 'bg-[#0e1124]',
   sidetext: 'text-slate-300',
-  border: 'border-white/10',
-  hover: 'hover:bg-white/5',
+  border: 'border-indigo-300/15',
+  hover: 'hover:bg-indigo-300/10',
   button:
-    'bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-sm hover:from-indigo-400 hover:to-violet-400',
-  active: 'bg-indigo-500/20 text-indigo-200',
-  line: 'hover:bg-white/5',
-  card: 'bg-[#1a1e29]',
+    'bg-gradient-to-r from-violet-500 via-indigo-500 to-cyan-500 text-white shadow-lg shadow-indigo-500/30 hover:brightness-110',
+  active: 'bg-gradient-to-r from-violet-500/25 to-cyan-400/15 text-violet-100 ring-1 ring-violet-400/30',
+  line: 'hover:bg-indigo-300/10',
+  card: 'bg-[#161a34]/80',
   muted: 'text-slate-400',
-  backdrop: 'bg-black/40',
-  hero: 'bg-gradient-to-b from-[#1a1d2e] via-[#0e1015] to-[#0e1015]',
-  accent: 'from-indigo-500 to-violet-500',
+  backdrop: 'bg-[#04050d]/60',
+  hero: 'bg-[#0a0c18] bg-[image:radial-gradient(ellipse_at_top,#2b2070_0%,#0d1022_55%,#0a0c18_100%)]',
+  accent: 'from-violet-500 to-cyan-400',
 };
 
 const COLORFUL = {
