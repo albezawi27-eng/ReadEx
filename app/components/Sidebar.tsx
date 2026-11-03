@@ -76,8 +76,11 @@ export default function Sidebar({
     setSetting('sidebarMode', next).catch(() => {});
   };
 
-  const sectionById = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
-
+  const sectionById = useMemo(() => {
+    const map = new Map<string, Section>();
+    sections.forEach((s) => map.set(s.id, s));
+    return map;
+  }, [sections]);
   const pageNumById = useMemo(() => {
     const map = new Map<string, number>();
     sections.forEach((s, i) => map.set(s.id, s.crops?.[0]?.pageNum ?? i + 1));
