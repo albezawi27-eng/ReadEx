@@ -21,11 +21,13 @@ export interface PDFSection {
   crops?: PageCrop[];
 }
 
-// A topic is a run of consecutive pages that belong together (a chapter).
+// A topic is a run of consecutive pages (a part, chapter, section...).
+// Topics nest: children cover sub-ranges of their parent's pages.
 export interface Topic {
   title: string;
   startPage: number;
   endPage: number;
+  children: Topic[];
 }
 
 async function loadPDFJS(): Promise<any> {
@@ -116,13 +118,23 @@ export async function extractPDFText(file: File): Promise<PDFSection[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Topics
+// Topics (layered)
 // ---------------------------------------------------------------------------
 
+// Deepest nesting shown in the sidebar (levels, not counting pages).
+const MAX_TOPIC_LEVELS = 4;
+
+// A heading found in the document, in reading order. depth 0 is the top level.
 interface RawEntry {
   title: string;
   startPage: number;
   depth: number;
+}
+
+interface DraftNode {
+  title: string;
+  startPage: number;
+  children: DraftNode[];
 }
 
 // Resolves a bookmark destination (named or explicit) to a 1-based page number.
@@ -143,55 +155,95 @@ async function resolveDestPage(pdf: any, dest: any): Promise<number | null> {
   }
 }
 
+// Flattens the bookmark tree into reading-order entries that keep their depth.
+// A grouping bookmark with no destination of its own borrows the page of its
+// first child, so it still appears as a parent topic.
 async function flattenOutline(pdf: any, items: any[], depth: number, out: RawEntry[]): Promise<void> {
   for (const item of items) {
     const title = String(item.title ?? '').replace(/\s+/g, ' ').trim();
-    if (item.dest && title) {
-      const page = await resolveDestPage(pdf, item.dest);
-      if (page !== null && page >= 1 && page <= pdf.numPages) {
-        out.push({ title, startPage: page, depth });
-      }
-    }
+    let page: number | null = item.dest ? await resolveDestPage(pdf, item.dest) : null;
+
+    const childEntries: RawEntry[] = [];
     if (Array.isArray(item.items) && item.items.length > 0) {
-      await flattenOutline(pdf, item.items, depth + 1, out);
+      await flattenOutline(pdf, item.items, depth + 1, childEntries);
+    }
+
+    if ((page === null || page < 1 || page > pdf.numPages) && childEntries.length > 0) {
+      page = childEntries[0].startPage;
+    }
+
+    if (title && page !== null && page >= 1 && page <= pdf.numPages) {
+      out.push({ title, startPage: page, depth });
+    }
+    for (const child of childEntries) out.push(child);
+  }
+}
+
+// Turns reading-order entries into a tree. Tolerates gaps in depth (for
+// example a child whose parent bookmark was dropped).
+function entriesToDraft(entries: RawEntry[]): DraftNode[] {
+  const roots: DraftNode[] = [];
+  const stack: { depth: number; node: DraftNode }[] = [];
+
+  for (const entry of entries) {
+    const node: DraftNode = { title: entry.title, startPage: entry.startPage, children: [] };
+    while (stack.length > 0 && stack[stack.length - 1].depth >= entry.depth) stack.pop();
+    if (stack.length > 0) stack[stack.length - 1].node.children.push(node);
+    else roots.push(node);
+    stack.push({ depth: entry.depth, node });
+  }
+
+  return roots;
+}
+
+// Gives every node its page range. A node ends where its next sibling starts
+// (or at the end of its parent), children are clamped inside their parent,
+// and siblings that start on the same page are merged.
+function finalizeLevel(nodes: DraftNode[], rangeStart: number, rangeEnd: number, level: number): Topic[] {
+  const clamped: DraftNode[] = [];
+  for (const node of nodes) {
+    const start = Math.max(node.startPage, rangeStart);
+    if (start > rangeEnd) continue;
+    clamped.push({ title: node.title, startPage: start, children: node.children });
+  }
+  clamped.sort((a, b) => a.startPage - b.startPage);
+
+  const merged: DraftNode[] = [];
+  for (const node of clamped) {
+    const last = merged[merged.length - 1];
+    if (last && last.startPage === node.startPage) {
+      last.children = last.children.concat(node.children);
+    } else {
+      merged.push({ title: node.title, startPage: node.startPage, children: node.children.slice() });
     }
   }
-}
 
-// Uses the shallowest bookmark level that has at least two entries, so a
-// book wrapped in a single "title" bookmark still yields chapters.
-function pickTopicLevel(entries: RawEntry[]): RawEntry[] {
-  for (let depth = 0; depth <= 3; depth++) {
-    const level = entries.filter((e) => e.depth === depth);
-    if (level.length >= 2) return level;
-  }
-  return entries;
-}
-
-function buildTopics(entries: RawEntry[], numPages: number): Topic[] {
-  const sorted = [...entries].sort((a, b) => a.startPage - b.startPage);
-
-  // One topic per start page: if several start on the same page, keep the first.
-  const unique: RawEntry[] = [];
-  for (const entry of sorted) {
-    if (unique.length > 0 && unique[unique.length - 1].startPage === entry.startPage) continue;
-    unique.push(entry);
-  }
-  if (unique.length < 2) return [];
-
-  const topics: Topic[] = [];
-  if (unique[0].startPage > 1) {
-    topics.push({ title: 'Front matter', startPage: 1, endPage: unique[0].startPage - 1 });
-  }
-  unique.forEach((entry, i) => {
-    const next = unique[i + 1];
-    topics.push({
-      title: entry.title.length > 80 ? entry.title.slice(0, 80) + '…' : entry.title,
-      startPage: entry.startPage,
-      endPage: next ? next.startPage - 1 : numPages,
+  const result: Topic[] = [];
+  merged.forEach((node, i) => {
+    const next = merged[i + 1];
+    const endPage = next ? Math.max(node.startPage, next.startPage - 1) : rangeEnd;
+    const children =
+      level + 1 < MAX_TOPIC_LEVELS && node.children.length > 0
+        ? finalizeLevel(node.children, node.startPage, endPage, level + 1)
+        : [];
+    result.push({
+      title: node.title.length > 80 ? node.title.slice(0, 80) + '…' : node.title,
+      startPage: node.startPage,
+      endPage,
+      children,
     });
   });
-  return topics;
+  return result;
+}
+
+// A book wrapped in one big "title" bookmark would otherwise show a single
+// topic containing everything -- open it up and show its contents instead.
+function unwrapSingleRoot(topics: Topic[]): Topic[] {
+  let current = topics;
+  while (current.length === 1 && current[0].children.length >= 2) {
+    current = current[0].children;
+  }
+  return current;
 }
 
 const STRONG_SECTION_KEYWORDS =
@@ -199,7 +251,10 @@ const STRONG_SECTION_KEYWORDS =
 const EXPLICIT_CHAPTER = /^(?:Chapter|Section|Part|Appendix)\s+[\dIVXLC]+/i;
 const TOP_LEVEL_NUMBERED_HEADING =
   /^(?:[IVXLC]+\.\s+[A-Z]|\d+\.?\s+[A-Z])[a-zA-Z0-9\s:,\-]*$/;
+// Any dotted numbering: "3.2", "3.2.1 Title", "A.1 Title"
 const SUBSECTION_NUMBERED_HEADING = /^(?:\d+(?:\.\d+)+|[A-Z]\.\d+)\s*[a-zA-Z0-9\s:,\-]*$/;
+// A real two-level subheading with a title: "2.1 Background"
+const NUMBERED_SUBHEADING = /^\d+\.\d+\.?\s+[A-Z][A-Za-z0-9\s:,\-]{2,}$/;
 const PURE_TEXT_HEADING = /^[A-Z][a-zA-Z0-9\s:,\-]*$/;
 const MATH_SYMBOLS =
   /[=+\-*/<>\u0370-\u03FF\u2070-\u209F\u2100-\u214F\u2190-\u21FF\u2200-\u22FF\u27C0-\u27EF\u2980-\u29FF\u2A00-\u2AFF\u20D0-\u20FF\u00B1\u00D7\u00F7\u00B2\u00B3\u00B9\u{1D400}-\u{1D7FF}\uE000-\uF8FF]/u;
@@ -307,9 +362,10 @@ function mostCommonFontSize(lines: TextLine[]): number {
   return best;
 }
 
-// Fallback for PDFs with no bookmarks: finds top-level headings by their
-// wording and font size. Deliberately strict -- better to find nothing than
-// to fill the sidebar with noise.
+// Fallback for PDFs with no bookmarks. Finds chapter-level headings by their
+// wording and font size, and two-level numbered subheadings ("2.1 Title").
+// Deliberately strict -- better to find nothing than to fill the sidebar
+// with noise.
 async function detectTopicsByHeadings(pdf: any): Promise<RawEntry[]> {
   const lines = await collectLines(pdf);
   if (lines.length === 0) return [];
@@ -326,21 +382,36 @@ async function detectTopicsByHeadings(pdf: any): Promise<RawEntry[]> {
 
   const entries: RawEntry[] = [];
   const pagesWithTopic = new Set<number>();
+  const pagesWithSub = new Set<number>();
 
   for (const line of lines) {
-    if (pagesWithTopic.has(line.pageNum)) continue;
-
     const text = line.text.trim();
     if (text.length < 3 || text.length >= 80) continue;
     if (isMetadataLine(text)) continue;
     if ((pagesByText.get(text.toLowerCase())?.size ?? 0) >= 3) continue;
     if (MATH_SYMBOLS.test(text)) continue;
-    if (SUBSECTION_NUMBERED_HEADING.test(text)) continue;
 
     const ratio = bodySize > 0 ? line.fontSize / bodySize : 1;
+    const words = text.split(/\s+/).filter(Boolean).length;
+
+    // Dotted numbering is a sub-level heading (or an equation/figure number).
+    if (SUBSECTION_NUMBERED_HEADING.test(text)) {
+      if (
+        NUMBERED_SUBHEADING.test(text) &&
+        ratio > 1.05 &&
+        words <= 12 &&
+        !pagesWithSub.has(line.pageNum)
+      ) {
+        entries.push({ title: text, startPage: line.pageNum, depth: 1 });
+        pagesWithSub.add(line.pageNum);
+      }
+      continue;
+    }
+
+    if (pagesWithTopic.has(line.pageNum)) continue;
+
     const larger = ratio > 1.15;
     const muchLarger = ratio > 1.3;
-    const words = text.split(/\s+/).filter(Boolean).length;
 
     const isHeading =
       STRONG_SECTION_KEYWORDS.test(text) ||
@@ -355,7 +426,11 @@ async function detectTopicsByHeadings(pdf: any): Promise<RawEntry[]> {
   }
 
   // Far too many "headings" means the detection is just picking up noise.
-  if (entries.length > 8 && entries.length > pdf.numPages * 0.5) return [];
+  const top = entries.filter((e) => e.depth === 0);
+  if (top.length > 8 && top.length > pdf.numPages * 0.5) return [];
+
+  const sub = entries.filter((e) => e.depth === 1);
+  if (sub.length > pdf.numPages) return top;
 
   return entries;
 }
@@ -371,9 +446,7 @@ export async function extractTopics(file: File): Promise<Topic[]> {
     try {
       const outline = await pdf.getOutline();
       if (Array.isArray(outline) && outline.length > 0) {
-        const flat: RawEntry[] = [];
-        await flattenOutline(pdf, outline, 0, flat);
-        entries = pickTopicLevel(flat);
+        await flattenOutline(pdf, outline, 0, entries);
       }
     } catch (err) {
       console.warn('Could not read PDF bookmarks:', err);
@@ -383,7 +456,17 @@ export async function extractTopics(file: File): Promise<Topic[]> {
       entries = await detectTopicsByHeadings(pdf);
     }
 
-    return buildTopics(entries, pdf.numPages);
+    let topics = unwrapSingleRoot(finalizeLevel(entriesToDraft(entries), 1, pdf.numPages, 0));
+    if (topics.length < 2) return [];
+
+    if (topics[0].startPage > 1) {
+      topics = [
+        { title: 'Front matter', startPage: 1, endPage: topics[0].startPage - 1, children: [] },
+        ...topics,
+      ];
+    }
+
+    return topics;
   } catch (err) {
     // Topics are a convenience -- never let them break opening a book.
     console.warn('Topic detection failed:', err);
@@ -392,9 +475,10 @@ export async function extractTopics(file: File): Promise<Topic[]> {
 }
 
 // Topics only depend on the file, so they're computed once per book and cached.
-// Bump the version in the key if the detection logic ever changes.
+// Bump the version in the key if the detection logic or shape ever changes
+// (v2 = layered topics with children).
 export async function loadTopicsForBook(bookId: string, file: File): Promise<Topic[]> {
-  const cacheKey = `topics-v1:${bookId}`;
+  const cacheKey = `topics-v2:${bookId}`;
 
   try {
     const cached = await getSetting(cacheKey);

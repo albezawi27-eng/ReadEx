@@ -15,6 +15,19 @@ interface Section {
 
 type SidebarMode = 'pages' | 'topics';
 
+// A topic prepared for display: every page inside it (sub-topics included),
+// plus its contents in reading order -- pages that belong directly to it and
+// its sub-topics, interleaved exactly as they fall in the book.
+type TopicItem = { kind: 'page'; id: string } | { kind: 'topic'; view: TopicView };
+
+interface TopicView {
+  topic: Topic;
+  key: string;
+  depth: number;
+  ids: string[];
+  items: TopicItem[];
+}
+
 interface SidebarProps {
   sections: Section[];
   activeSection: string | null;
@@ -29,6 +42,16 @@ interface SidebarProps {
   showOnMobile: boolean;
 }
 
+const NO_TOPICS: Topic[] = [];
+
+function childViewsOf(view: TopicView): TopicView[] {
+  const out: TopicView[] = [];
+  for (const item of view.items) {
+    if (item.kind === 'topic') out.push(item.view);
+  }
+  return out;
+}
+
 export default function Sidebar({
   sections,
   activeSection,
@@ -36,7 +59,7 @@ export default function Sidebar({
   progress,
   onProgressToggle,
   onProgressSet,
-  topics = [],
+  topics = NO_TOPICS,
   topicsStatus = 'none',
   onPDFExtracted,
   onBackToLibrary,
@@ -49,8 +72,7 @@ export default function Sidebar({
   const [isUploading, setIsUploading] = useState(false);
   const [mode, setMode] = useState<SidebarMode>('pages');
   const [modeLoaded, setModeLoaded] = useState(false);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [lastActiveTopic, setLastActiveTopic] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
   const pendingScrollRef = useRef(false);
 
@@ -81,42 +103,73 @@ export default function Sidebar({
     sections.forEach((s) => map.set(s.id, s));
     return map;
   }, [sections]);
+
   const pageNumById = useMemo(() => {
     const map = new Map<string, number>();
     sections.forEach((s, i) => map.set(s.id, s.crops?.[0]?.pageNum ?? i + 1));
     return map;
   }, [sections]);
 
-  // Each topic with the ids of the pages inside it.
-  const topicGroups = useMemo(
-    () =>
-      topics.map((topic) => ({
-        topic,
-        ids: sections
-          .filter((s) => {
-            const page = pageNumById.get(s.id) ?? 0;
-            return page >= topic.startPage && page <= topic.endPage;
-          })
-          .map((s) => s.id),
-      })),
-    [topics, sections, pageNumById]
-  );
+  // The full topic tree, ready to render.
+  const topicTree = useMemo(() => {
+    const build = (topic: Topic, depth: number): TopicView => {
+      const ids = sections
+        .filter((s) => {
+          const page = pageNumById.get(s.id) ?? 0;
+          return page >= topic.startPage && page <= topic.endPage;
+        })
+        .map((s) => s.id);
 
-  const activeTopicIdx = useMemo(() => {
-    if (!activeSection) return null;
-    const idx = topicGroups.findIndex((g) => g.ids.includes(activeSection));
-    return idx === -1 ? null : idx;
-  }, [activeSection, topicGroups]);
+      const childViews = topic.children.map((child) => build(child, depth + 1));
 
-  const showTopics = mode === 'topics' && topicsStatus === 'ready' && topicGroups.length > 0;
+      const items: TopicItem[] = [];
+      const emitted = new Set<number>();
+      for (const id of ids) {
+        const page = pageNumById.get(id) ?? 0;
+        const childIndex = topic.children.findIndex((c) => page >= c.startPage && page <= c.endPage);
+        if (childIndex === -1) {
+          items.push({ kind: 'page', id });
+        } else if (!emitted.has(childIndex)) {
+          emitted.add(childIndex);
+          items.push({ kind: 'topic', view: childViews[childIndex] });
+        }
+      }
 
-  // Opens the topic you are reading whenever you move into a new one.
-  if (activeTopicIdx !== lastActiveTopic) {
-    setLastActiveTopic(activeTopicIdx);
-    if (activeTopicIdx !== null) {
-      setExpanded((prev) => new Set(prev).add(activeTopicIdx));
+      return { topic, key: `${depth}:${topic.startPage}`, depth, ids, items };
+    };
+
+    return topics.map((topic) => build(topic, 0));
+  }, [topics, sections, pageNumById]);
+
+  // Path of topics (outermost first) that contain the page being read.
+  const activeChain = useMemo(() => {
+    const chain: string[] = [];
+    if (!activeSection) return chain;
+    let level: TopicView[] = topicTree;
+    while (level.length > 0) {
+      const hit = level.find((view) => view.ids.includes(activeSection));
+      if (!hit) break;
+      chain.push(hit.key);
+      level = childViewsOf(hit);
     }
-  }
+    return chain;
+  }, [activeSection, topicTree]);
+
+  const showTopics = mode === 'topics' && topicsStatus === 'ready' && topicTree.length > 0;
+
+  // Opens every topic on the way to the page you are reading, whenever you
+  // move into a different topic. Manually collapsing one stays collapsed
+  // until you move somewhere else.
+  const activeChainKey = activeChain.join('|');
+  useEffect(() => {
+    if (activeChain.length === 0) return;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      activeChain.forEach((key) => next.add(key));
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChainKey]);
 
   // Keeps the current page visible in the list. Waits (via the pending flag)
   // until the row actually exists, since a collapsed topic hides its pages.
@@ -135,18 +188,13 @@ export default function Sidebar({
     }
   });
 
-  const toggleExpanded = (idx: number) => {
+  const toggleExpanded = (key: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
-  };
-
-  const jumpToTopic = (idx: number, ids: string[]) => {
-    setExpanded((prev) => new Set(prev).add(idx));
-    if (ids[0]) onSectionSelect(ids[0]);
   };
 
   const setIdsDone = (ids: string[], done: boolean) => {
@@ -221,6 +269,71 @@ export default function Sidebar({
         <span className={`flex-1 text-sm truncate ${isActive ? 'font-semibold' : 'font-medium'}`}>
           {section.title}
         </span>
+      </div>
+    );
+  };
+
+  const renderTopic = (view: TopicView): React.ReactNode => {
+    const { topic } = view;
+    const doneCount = view.ids.filter((id) => progress.has(id)).length;
+    const allDone = view.ids.length > 0 && doneCount === view.ids.length;
+    const partial = doneCount > 0 && !allDone;
+    const isDeepestActive = activeChain[activeChain.length - 1] === view.key;
+    const isOnActivePath = activeChain.includes(view.key);
+    const isOpen = expanded.has(view.key);
+    const subCount = topic.children.length;
+    const rangeLabel =
+      topic.startPage === topic.endPage ? `p. ${topic.startPage}` : `pp. ${topic.startPage}–${topic.endPage}`;
+
+    return (
+      <div key={view.key} className="mb-0.5">
+        <div
+          onClick={() => toggleExpanded(view.key)}
+          className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition ${
+            isDeepestActive ? themeClasses.active : themeClasses.hover
+          }`}
+        >
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setIdsDone(view.ids, !allDone);
+            }}
+            title={allDone ? 'Mark everything here as unread' : 'Mark everything here as read'}
+            className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[11px] leading-none transition ${
+              allDone
+                ? 'bg-emerald-500 border-emerald-500 text-white'
+                : partial
+                  ? 'border-emerald-500 text-emerald-500'
+                  : 'border-current opacity-30 hover:opacity-70'
+            }`}
+          >
+            {allDone ? '✓' : partial ? '•' : ''}
+          </button>
+          <div className="flex-1 min-w-0">
+            <div
+              className={`truncate ${view.depth === 0 ? 'text-sm' : 'text-[13px]'} ${
+                isDeepestActive || isOnActivePath ? 'font-semibold' : 'font-medium'
+              }`}
+            >
+              {topic.title}
+            </div>
+            <div className="text-[11px] opacity-60 truncate">
+              {rangeLabel} · {doneCount}/{view.ids.length} read
+              {subCount > 0 ? ` · ${subCount} sub-topic${subCount === 1 ? '' : 's'}` : ''}
+            </div>
+          </div>
+          <span className="shrink-0 w-5 text-center text-xs opacity-60">{isOpen ? '▾' : '▸'}</span>
+        </div>
+
+        {isOpen && (
+          <div className={`ml-4 mt-0.5 pl-2 border-l ${themeClasses.border} space-y-0.5`}>
+            {view.items.map((item) => {
+              if (item.kind === 'topic') return renderTopic(item.view);
+              const section = sectionById.get(item.id);
+              return section ? renderPageRow(section, true) : null;
+            })}
+          </div>
+        )}
       </div>
     );
   };
@@ -331,75 +444,7 @@ export default function Sidebar({
       <div ref={listRef} className="flex-1 overflow-y-auto p-3">
         {modeLoaded &&
           (showTopics ? (
-            <div>
-              {topicGroups.map((group, idx) => {
-                const { topic, ids } = group;
-                const doneCount = ids.filter((id) => progress.has(id)).length;
-                const allDone = ids.length > 0 && doneCount === ids.length;
-                const partial = doneCount > 0 && !allDone;
-                const isActiveTopic = idx === activeTopicIdx;
-                const isOpen = expanded.has(idx);
-                const rangeLabel =
-                  topic.startPage === topic.endPage
-                    ? `p. ${topic.startPage}`
-                    : `pp. ${topic.startPage}–${topic.endPage}`;
-
-                return (
-                  <div key={`${topic.startPage}-${idx}`} className="mb-1">
-                    <div
-                      onClick={() => jumpToTopic(idx, ids)}
-                      className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition ${
-                        isActiveTopic ? themeClasses.active : themeClasses.hover
-                      }`}
-                    >
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setIdsDone(ids, !allDone);
-                        }}
-                        title={allDone ? 'Mark topic as unread' : 'Mark whole topic as read'}
-                        className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[11px] leading-none transition ${
-                          allDone
-                            ? 'bg-emerald-500 border-emerald-500 text-white'
-                            : partial
-                              ? 'border-emerald-500 text-emerald-500'
-                              : 'border-current opacity-30 hover:opacity-70'
-                        }`}
-                      >
-                        {allDone ? '✓' : partial ? '•' : ''}
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-sm truncate ${isActiveTopic ? 'font-semibold' : 'font-medium'}`}>
-                          {topic.title}
-                        </div>
-                        <div className="text-[11px] opacity-60">
-                          {rangeLabel} · {doneCount}/{ids.length} read
-                        </div>
-                      </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleExpanded(idx);
-                        }}
-                        title={isOpen ? 'Hide pages' : 'Show pages'}
-                        className={`shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-xs ${themeClasses.hover}`}
-                      >
-                        {isOpen ? '▾' : '▸'}
-                      </button>
-                    </div>
-
-                    {isOpen && (
-                      <div className={`ml-5 mt-0.5 pl-2 border-l ${themeClasses.border} space-y-0.5`}>
-                        {ids.map((id) => {
-                          const section = sectionById.get(id);
-                          return section ? renderPageRow(section, true) : null;
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <div>{topicTree.map((view) => renderTopic(view))}</div>
           ) : (
             <div className="space-y-0.5">{sections.map((section) => renderPageRow(section, false))}</div>
           ))}
