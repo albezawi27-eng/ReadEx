@@ -273,12 +273,14 @@ function HomeContent() {
   };
     // Optional: rebuilds this book's topics with Gemini, using the saved API key.
   // Returns an error message to show, or null on success.
-  const handleImproveTopics = async (): Promise<string | null> => {
+  // Optional: rebuilds this book's topics with Gemini, using the saved API key.
+  // Returns an error message to show, or null on success.
+  const handleImproveTopics = async (onProgress: (stage: string) => void): Promise<string | null> => {
     if (!activeBookId || !pdfFile) return 'Open a book first.';
     const apiKey = await getSetting('geminiApiKey');
     if (!apiKey) return 'Add your Gemini API key first — open 💬 Ask AI and paste it there.';
     try {
-      const result = await generateTopicsWithAI(activeBookId, pdfFile, apiKey);
+      const result = await generateTopicsWithAI(activeBookId, pdfFile, apiKey, onProgress);
       setTopics(result);
       setTopicsStatus('ready');
       return null;

@@ -37,7 +37,7 @@ interface SidebarProps {
   onProgressSet?: (ids: string[], done: boolean) => void;
   topics?: Topic[];
   topicsStatus?: 'loading' | 'ready' | 'none';
-  onImproveTopics?: () => Promise<string | null>;
+  onImproveTopics?: (onProgress: (stage: string) => void) => Promise<string | null>;
   onPDFExtracted?: (sections: PDFSection[], file?: File) => Promise<void>;
   onBackToLibrary?: () => void;
   showOnMobile: boolean;

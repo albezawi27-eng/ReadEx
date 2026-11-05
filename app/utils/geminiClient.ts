@@ -275,3 +275,81 @@ export async function askGeminiAboutBookStream(params: {
 
   return fullText;
 }
+// Builds the table of contents from a text digest (no PDF upload). The whole
+// call, including reading the answer, is covered by one timeout.
+export async function requestTopicOutlineFromDigest(params: {
+  apiKey: string;
+  digest: string;
+}): Promise<AIOutlineEntry[]> {
+  const { apiKey, digest } = params;
+
+  const instructions = [
+    'You are building the table of contents of a book from text extracted from its PDF.',
+    'List its real headings as a hierarchy: parts or chapters (level 1), sections (level 2), subsections (level 3).',
+    'Rules:',
+    '- If the first pages contain a printed table of contents, follow it, and match its titles to the candidate lines to find each heading\'s FILE page.',
+    '- Otherwise choose real headings from the candidate lines. Ignore sentences, captions, running headers, equation fragments, and list items.',
+    '- "page" is the p-number of the file page where the heading itself appears. It is NOT a number printed on the page.',
+    '- Keep titles as written, shortened to at most 80 characters. Order entries by page.',
+    '- Do not invent headings that appear in neither the first pages nor the candidate lines.',
+    'Return ONLY a JSON array of objects with exactly these keys: "title" (string), "page" (integer), "level" (integer from 1 to 3). No other text.',
+  ].join('\n');
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 100_000);
+
+  try {
+    const response = await fetch(OUTLINE_GENERATE_URL, {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: `${instructions}\n\n${digest}` }] }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Gemini request failed (${response.status}): ${errText.slice(0, 300)}`);
+    }
+
+    const data = await response.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw: string = (data?.candidates?.[0]?.content?.parts ?? []).map((p: any) => p?.text ?? '').join('');
+    if (!raw.trim()) {
+      throw new Error('Gemini returned an empty answer.');
+    }
+
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let parsed: any;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      throw new Error('Gemini returned an outline that could not be read. Try again.');
+    }
+
+    const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.entries) ? parsed.entries : null;
+    if (!list) {
+      throw new Error('Gemini returned an unexpected outline format.');
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return list.map((e: any) => ({
+      title: String(e?.title ?? ''),
+      page: Number(e?.page),
+      level: Number(e?.level),
+    }));
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Gemini took too long to answer (over 100 seconds). Try again in a minute.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}

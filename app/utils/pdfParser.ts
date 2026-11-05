@@ -726,3 +726,123 @@ export async function loadTopicsForBook(bookId: string, file: File): Promise<Top
 
   return topics;
 }
+// ---------------------------------------------------------------------------
+// Text digest for the AI outline -- lets Gemini work from extracted text
+// instead of reading (and needing an upload of) the whole PDF
+// ---------------------------------------------------------------------------
+
+const DIGEST_FRONT_PAGES = 14;
+const DIGEST_CHARS_PER_FRONT_PAGE = 3000;
+const DIGEST_MAX_CANDIDATES = 1500;
+const DIGEST_MAX_PER_PAGE = 8;
+
+export interface OutlineDigest {
+  text: string;
+  numPages: number;
+}
+
+interface DigestCandidate {
+  page: number;
+  ratio: number;
+  altFont: boolean;
+  text: string;
+}
+
+export async function buildOutlineDigest(file: File): Promise<OutlineDigest> {
+  const pdfjsLib = await loadPDFJS();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const numPages: number = pdf.numPages;
+
+  const lines = await collectLines(pdf);
+  if (lines.length === 0) {
+    throw new Error('This PDF has no selectable text (it looks scanned), so topics cannot be detected from it.');
+  }
+
+  // Body style = the (font, size) carrying the most text.
+  const charsByStyle = new Map<string, number>();
+  for (const line of lines) {
+    const key = styleKey(line);
+    charsByStyle.set(key, (charsByStyle.get(key) || 0) + line.text.length);
+  }
+  let bodyKey = '';
+  let bodyChars = 0;
+  for (const [key, chars] of charsByStyle.entries()) {
+    if (chars > bodyChars) {
+      bodyKey = key;
+      bodyChars = chars;
+    }
+  }
+  const [bodySizeText, ...fontParts] = bodyKey.split('|');
+  const bodySize = parseFloat(bodySizeText) || 1;
+  const bodyFont = fontParts.join('|');
+
+  // Running headers and footers: the same text in the page margins, again and again.
+  const inMargin = (l: TextLine) => l.yFrac > 0.93 || l.yFrac < 0.06;
+  const marginKey = (t: string) => t.toLowerCase().replace(/\d+/g, '#').trim();
+  const marginPages = new Map<string, Set<number>>();
+  for (const line of lines) {
+    if (!inMargin(line)) continue;
+    const key = marginKey(line.text);
+    const set = marginPages.get(key);
+    if (set) set.add(line.pageNum);
+    else marginPages.set(key, new Set([line.pageNum]));
+  }
+
+  // The first pages in full -- a printed table of contents is usually here.
+  const frontParts: string[] = [];
+  for (let p = 1; p <= Math.min(numPages, DIGEST_FRONT_PAGES); p++) {
+    const pageText = lines
+      .filter((l) => l.pageNum === p)
+      .map((l) => l.text)
+      .join('\n')
+      .slice(0, DIGEST_CHARS_PER_FRONT_PAGE);
+    if (pageText.trim()) frontParts.push(`--- file page ${p} ---\n${pageText}`);
+  }
+
+  // Lines that look different from body text. Deliberately loose: Gemini
+  // decides which ones are real headings.
+  let candidates: DigestCandidate[] = [];
+  const perPage = new Map<number, number>();
+  for (const line of lines) {
+    const text = line.text;
+    if (text.length < 3 || text.length > 100) continue;
+    if (/[,;]$/.test(text)) continue;
+    if (!/^[A-Z0-9]/.test(text)) continue;
+    if (isMetadataLine(text) || FIGURE_LABEL.test(text) || HEADING_MATH.test(text)) continue;
+    if (inMargin(line) && (marginPages.get(marginKey(text))?.size ?? 0) >= 3) continue;
+    if (line.size < bodySize * 0.95) continue;
+
+    const ratio = line.size / bodySize;
+    const altFont = line.font !== bodyFont;
+    const looksNumbered = numberingDepth(text) !== null && text.split(/\s+/).length <= 10;
+    if (!(ratio > 1.05 || altFont || looksNumbered)) continue;
+
+    const count = perPage.get(line.pageNum) ?? 0;
+    if (count >= DIGEST_MAX_PER_PAGE) continue;
+    perPage.set(line.pageNum, count + 1);
+    candidates.push({ page: line.pageNum, ratio, altFont, text });
+  }
+
+  if (candidates.length > DIGEST_MAX_CANDIDATES) {
+    const strong = candidates.filter((c) => c.ratio >= 1.15 || numberingDepth(c.text) !== null);
+    if (strong.length > 0) candidates = strong;
+    if (candidates.length > DIGEST_MAX_CANDIDATES) candidates = candidates.slice(0, DIGEST_MAX_CANDIDATES);
+  }
+
+  const candidateLines = candidates.map(
+    (c) => `p${c.page} x${c.ratio.toFixed(1)}${c.altFont ? '*' : ''} ${c.text}`
+  );
+
+  const text = [
+    `This PDF has ${numPages} pages. In the lists below, "p12" means the 12th page of the FILE (the first page of the file is p1), which can differ from the number printed on the page.`,
+    '',
+    'FIRST PAGES (a printed table of contents, if the book has one, is usually here):',
+    frontParts.join('\n\n') || '(no text on the first pages)',
+    '',
+    'CANDIDATE HEADING LINES -- lines that look different from body text. Format: p<file page> x<size relative to body text>[* = different font] <text>. Many of these are NOT real headings.',
+    candidateLines.join('\n') || '(none found)',
+  ].join('\n');
+
+  return { text, numPages };
+}
