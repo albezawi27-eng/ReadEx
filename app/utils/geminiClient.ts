@@ -1,3 +1,4 @@
+
 'use client';
 
 import { StoredChatMessage } from '@/app/utils/db';
@@ -5,7 +6,100 @@ import { StoredChatMessage } from '@/app/utils/db';
 const GEMINI_MODEL = 'gemini-3.5-flash';
 const UPLOAD_BASE = 'https://generativelanguage.googleapis.com/upload/v1beta/files';
 const STREAM_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse`;
+// ---------------------------------------------------------------------------
+// Table-of-contents extraction (used by "Improve topics with AI")
+// ---------------------------------------------------------------------------
 
+const OUTLINE_GENERATE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
+export interface AIOutlineEntry {
+  title: string;
+  page: number;
+  level: number;
+}
+
+export async function requestTopicOutline(params: {
+  apiKey: string;
+  fileUri: string;
+  fileMimeType: string;
+}): Promise<AIOutlineEntry[]> {
+  const { apiKey, fileUri, fileMimeType } = params;
+
+  const prompt = [
+    'You are indexing a PDF. List its table of contents as a hierarchy: parts or chapters (level 1), their sections (level 2), and subsections (level 3).',
+    'Rules:',
+    '- Use the document\'s own headings. If it has a printed table of contents, follow it.',
+    '- "page" must be the position of the page inside THIS PDF file, counting the first page of the file as 1. It is NOT the number printed on the page; account for front matter such as the cover and preface.',
+    '- Include only real headings. Never include sentences from body text, figure or table captions, or running headers.',
+    '- Keep titles as written; shorten any title longer than 80 characters.',
+    '- Order entries by page.',
+    'Return ONLY a JSON array of objects with exactly these keys: "title" (string), "page" (integer), "level" (integer from 1 to 3). No other text.',
+  ].join('\n');
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180_000);
+
+  let response: Response;
+  try {
+    response = await fetch(OUTLINE_GENERATE_URL, {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [{ fileData: { fileUri, mimeType: fileMimeType } }, { text: prompt }],
+          },
+        ],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Gemini took too long (over 3 minutes). Try again later.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(`Gemini request failed (${response.status}): ${errText.slice(0, 300)}`);
+  }
+
+  const data = await response.json();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw: string = (data?.candidates?.[0]?.content?.parts ?? []).map((p: any) => p?.text ?? '').join('');
+  if (!raw.trim()) {
+    throw new Error('Gemini returned an empty answer.');
+  }
+
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error('Gemini returned an outline that could not be read. Try again.');
+  }
+
+  const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.entries) ? parsed.entries : null;
+  if (!list) {
+    throw new Error('Gemini returned an unexpected outline format.');
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return list.map((e: any) => ({
+    title: String(e?.title ?? ''),
+    page: Number(e?.page),
+    level: Number(e?.level),
+  }));
+}
 export async function uploadPdfToGemini(
   file: File,
   apiKey: string

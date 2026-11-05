@@ -1,6 +1,7 @@
 'use client';
 import SoundEffects from '@/app/components/SoundEffects';
 import { playPageTurn } from '@/app/utils/sounds';
+import { generateTopicsWithAI } from '@/app/utils/aiTopics';
 import { useEffect, useRef, useState } from 'react';
 import { ThemeProvider, useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import Sidebar from '@/app/components/Sidebar';
@@ -19,6 +20,7 @@ import {
   makeSectionKey,
   StoredProgress,
   StoredNote,
+  getSetting,
 } from '@/app/utils/db';
 
 interface AppSection {
@@ -269,6 +271,21 @@ function HomeContent() {
       return next;
     });
   };
+    // Optional: rebuilds this book's topics with Gemini, using the saved API key.
+  // Returns an error message to show, or null on success.
+  const handleImproveTopics = async (): Promise<string | null> => {
+    if (!activeBookId || !pdfFile) return 'Open a book first.';
+    const apiKey = await getSetting('geminiApiKey');
+    if (!apiKey) return 'Add your Gemini API key first — open 💬 Ask AI and paste it there.';
+    try {
+      const result = await generateTopicsWithAI(activeBookId, pdfFile, apiKey);
+      setTopics(result);
+      setTopicsStatus('ready');
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'AI topic detection failed.';
+    }
+  };
   const handleLineClick = (lineIndex: number) => {
     const newHighlighted = new Set(highlightedLines);
     if (newHighlighted.has(lineIndex)) {
@@ -316,6 +333,7 @@ function HomeContent() {
             onPDFExtracted={handlePDFExtracted}
             onBackToLibrary={handleBackToLibrary}
             showOnMobile={mobileShowSidebar}
+            onImproveTopics={handleImproveTopics}
           />
           <ContentPanel
             activeSection={currentSection}

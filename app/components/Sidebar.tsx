@@ -1,5 +1,5 @@
 'use client';
-
+import ImproveTopicsButton from '@/app/components/ImproveTopicsButton';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme, getThemeClasses, THEME_OPTIONS } from '@/app/context/ThemeContext';
 import { extractPDFText, PDFSection, Topic } from '@/app/utils/pdfParser';
@@ -37,6 +37,7 @@ interface SidebarProps {
   onProgressSet?: (ids: string[], done: boolean) => void;
   topics?: Topic[];
   topicsStatus?: 'loading' | 'ready' | 'none';
+  onImproveTopics?: () => Promise<string | null>;
   onPDFExtracted?: (sections: PDFSection[], file?: File) => Promise<void>;
   onBackToLibrary?: () => void;
   showOnMobile: boolean;
@@ -61,6 +62,7 @@ export default function Sidebar({
   onProgressSet,
   topics = NO_TOPICS,
   topicsStatus = 'none',
+  onImproveTopics,
   onPDFExtracted,
   onBackToLibrary,
   showOnMobile,
@@ -437,6 +439,9 @@ export default function Sidebar({
           <p className="text-[11px] opacity-60 mt-2 px-1">
             No topics found in this document — showing pages.
           </p>
+        )}
+                {mode === 'topics' && topicsStatus !== 'loading' && onImproveTopics && (
+          <ImproveTopicsButton onImprove={onImproveTopics} />
         )}
       </div>
 
