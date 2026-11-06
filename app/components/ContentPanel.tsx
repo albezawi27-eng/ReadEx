@@ -6,6 +6,7 @@ import { useTheme, getThemeClasses } from '@/app/context/ThemeContext';
 import { PageCrop } from '@/app/utils/pdfParser';
 import { StoredAnnotationItem, getAllAnnotationsForBook } from '@/app/utils/db';
 import { useAnnotations } from '@/app/hooks/useAnnotations';
+import { useLayoutMode } from '@/app/hooks/useLayoutMode';
 import { exportAnnotatedPdf, downloadBlob } from '@/app/utils/pdfExport';
 import AnnotationLayer from '@/app/components/AnnotationLayer';
 import AskAI from '@/app/components/AskAI';
@@ -43,19 +44,17 @@ const DRAW_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#111827'];
 const DRAW_WIDTHS = [2, 4, 7];
 
 // Text layer build strategy, chosen by display scale:
-// - At or above this scale (laptops, tablets), the layer is built directly
-//   at the display scale with no transform.
-// - Below it (phones), spans would get tiny computed font sizes that
-//   mobile browsers silently enlarge, throwing selection off the glyphs.
-//   There the layer is built at a larger fixed scale and shrunk with one
-//   CSS transform, keeping every span's font size above that minimum.
+// - At or above this scale (laptops, tablets, phones held sideways), the
+//   layer is built directly at the display scale with no transform.
+// - Below it (phones held upright), spans would get tiny computed font sizes
+//   that mobile browsers silently enlarge, throwing selection off the glyphs.
+//   There the layer is built at a larger fixed scale and shrunk with one CSS
+//   transform, keeping every span's font size above that minimum.
 const TEXT_LAYER_DIRECT_BUILD_MIN_SCALE = 1;
 const TEXT_LAYER_SMALL_SCALE_BUILD = 2;
 const TEXT_LAYER_REBUILD_DEBOUNCE_MS = 150;
 
-// Must match the padding and max-width of the page container below
-// (contentStyle padding of 1rem per side, and the max-w-5xl wrapper).
-const PAGE_AREA_HORIZONTAL_PADDING = 32;
+// Matches the max-w-5xl wrapper around the pages below.
 const PAGE_AREA_MAX_WIDTH = 1024;
 
 interface PageGeometry {
@@ -69,6 +68,7 @@ function ToolButton({
   title,
   active,
   disabled,
+  small,
   themeClasses,
   children,
 }: {
@@ -76,6 +76,7 @@ function ToolButton({
   title: string;
   active?: boolean;
   disabled?: boolean;
+  small?: boolean;
   themeClasses: ThemeClasses;
   children: React.ReactNode;
 }) {
@@ -84,7 +85,9 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-sm font-semibold transition disabled:opacity-40 ${
+      className={`shrink-0 ${
+        small ? 'w-8 h-8' : 'w-9 h-9'
+      } rounded-lg flex items-center justify-center text-sm font-semibold transition disabled:opacity-40 ${
         active ? themeClasses.active : themeClasses.hover
       }`}
     >
@@ -99,6 +102,8 @@ function PageRenderer({
   theme,
   focusMode,
   selectMode,
+  short,
+  horizontalPadding,
   containerWidth,
   containerHeight,
   onGeometryReady,
@@ -109,6 +114,8 @@ function PageRenderer({
   theme: string;
   focusMode: boolean;
   selectMode: boolean;
+  short: boolean;
+  horizontalPadding: number;
   containerWidth: number | null;
   containerHeight: number | null;
   onGeometryReady?: (geom: PageGeometry) => void;
@@ -203,19 +210,24 @@ function PageRenderer({
     const nativeFullPageHeight = viewportHeight / scale;
     const nativeCropTop = yTop / scale;
 
+    // The page's real parent box is narrower than the whole content area by
+    // the side padding, and capped by the max width.
     const availableWidth = containerWidth
       ? focusMode
         ? containerWidth
-        : Math.min(containerWidth - PAGE_AREA_HORIZONTAL_PADDING, PAGE_AREA_MAX_WIDTH)
+        : Math.min(containerWidth - horizontalPadding, PAGE_AREA_MAX_WIDTH)
       : nativeCssWidth * PAGE_DISPLAY_SCALE;
     const widthScale = availableWidth / nativeCssWidth;
 
+    // Fullscreen on a roomy screen fits the whole page. On a short screen (a
+    // phone held sideways) that would shrink the page to a postage stamp, so
+    // it fits the width instead and you scroll down through the page.
     let effectiveScale: number;
-    if (focusMode && containerHeight) {
+    if (focusMode && !short && containerHeight) {
       const heightScale = (containerHeight - 24) / nativeCssCropHeight;
       effectiveScale = Math.min(FOCUS_MODE_MAX_SCALE, widthScale, heightScale);
     } else {
-      effectiveScale = Math.min(PAGE_DISPLAY_SCALE, widthScale);
+      effectiveScale = Math.min(focusMode ? FOCUS_MODE_MAX_SCALE : PAGE_DISPLAY_SCALE, widthScale);
     }
 
     const cssTop = nativeCropTop * effectiveScale;
@@ -256,7 +268,7 @@ function PageRenderer({
   useEffect(() => {
     if (rawDimsRef.current) applySizing();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusMode, containerWidth, containerHeight]);
+  }, [focusMode, short, horizontalPadding, containerWidth, containerHeight]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -356,8 +368,8 @@ function PageRenderer({
   }, [pdfFile, crop]);
 
   return (
-    <div className={`flex flex-col items-center w-full ${focusMode ? '' : 'mb-8'}`}>
-      {!focusMode && (
+    <div className={`flex flex-col items-center w-full ${focusMode ? '' : short ? 'mb-2' : 'mb-8'}`}>
+      {!focusMode && !short && (
         <div className="text-[11px] opacity-50 mb-2 font-semibold tracking-widest uppercase">
           Page {crop.pageNum}
         </div>
@@ -418,10 +430,12 @@ export default function ContentPanel({
 }: ContentPanelProps) {
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
+  const { compact, short } = useLayoutMode();
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isAskAIOpen, setIsAskAIOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(true);
+  const [notesOverlayOpen, setNotesOverlayOpen] = useState(false);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
@@ -460,10 +474,17 @@ export default function ContentPanel({
     canRedo,
   } = useAnnotations(activeBookId, pageNums);
 
-  // Notes start collapsed on small screens to leave room to read.
+  // Notes start collapsed on phones to leave room to read.
   useEffect(() => {
-    if (window.innerWidth < 768) setNotesOpen(false);
-  }, []);
+    if (compact) setNotesOpen(false);
+  }, [compact]);
+
+  // Rotating the phone changes the available space completely -- start the
+  // page fresh rather than keeping a zoom/pan position that no longer fits.
+  useEffect(() => {
+    transformRef.current?.resetTransform(0);
+    setZoomLevel(1);
+  }, [short, compact]);
 
   // Touch devices pause panning while selecting text; mouse devices keep
   // panning on and just skip drags that start on the text layer.
@@ -654,7 +675,8 @@ export default function ContentPanel({
     toolbarDragRef.current = null;
   };
 
-  const rootVisibilityClass = `${showOnMobile ? 'flex' : 'hidden'} md:flex`;
+  // Phones show one pane at a time; larger screens show both side by side.
+  const rootVisibilityClass = compact ? (showOnMobile ? 'flex' : 'hidden') : 'flex';
 
   if (!activeSection) {
     return (
@@ -679,28 +701,65 @@ export default function ContentPanel({
       themeClasses.border
     } ${enabled ? `${themeClasses.card} ${themeClasses.hover}` : 'opacity-30 cursor-not-allowed'}`;
 
+  const headerPadding = short ? 'px-2 py-1' : compact ? 'px-3 py-2.5' : 'px-6 py-3.5';
+  const sidePadding = compact ? 'px-4' : 'px-6';
+
   return (
     <div
       ref={panelRef}
-      className={`flex-1 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} flex-col overflow-hidden relative`}
+      className={`flex-1 min-w-0 ${themeClasses.bg} ${themeClasses.text} ${rootVisibilityClass} flex-col overflow-hidden relative`}
     >
       {/* Header */}
       <div
-        className={`px-3 py-2.5 md:px-6 md:py-3.5 border-b ${themeClasses.border} ${themeClasses.sidebg} shrink-0 flex items-center gap-2 md:gap-3`}
+        className={`${headerPadding} border-b ${themeClasses.border} ${themeClasses.sidebg} shrink-0 flex items-center gap-2 ${
+          short ? '' : 'md:gap-3'
+        }`}
       >
-        {!isFocusMode && (
+        {compact && !isFocusMode && (
           <button
             onClick={onShowSidebar}
-            className={`md:hidden shrink-0 text-sm px-3 py-1.5 rounded-lg border ${themeClasses.border} ${themeClasses.hover}`}
+            className={`shrink-0 text-sm ${
+              short ? 'px-2 py-1' : 'px-3 py-1.5'
+            } rounded-lg border ${themeClasses.border} ${themeClasses.hover}`}
           >
             ← Pages
           </button>
         )}
-        <h1 className="text-base md:text-xl font-bold truncate flex-1 min-w-0">{activeSection.title}</h1>
+        <h1
+          className={`${
+            short ? 'text-sm' : compact ? 'text-base' : 'text-xl'
+          } font-bold truncate flex-1 min-w-0`}
+        >
+          {activeSection.title}
+        </h1>
 
-        <div className={`flex items-center gap-0.5 p-1 rounded-xl border ${themeClasses.border} ${themeClasses.bg}`}>
+        <div className={`flex items-center gap-0.5 p-0.5 rounded-xl border ${themeClasses.border} ${themeClasses.bg}`}>
+          {short && (
+            <>
+              <ToolButton
+                small
+                themeClasses={themeClasses}
+                onClick={() => onNavigateSection('prev')}
+                disabled={!hasPrev}
+                title={prevSectionTitle ? `Previous: ${prevSectionTitle}` : 'Previous page'}
+              >
+                ◀
+              </ToolButton>
+              <ToolButton
+                small
+                themeClasses={themeClasses}
+                onClick={() => onNavigateSection('next')}
+                disabled={!hasNext}
+                title={nextSectionTitle ? `Next: ${nextSectionTitle}` : 'Next page'}
+              >
+                ▶
+              </ToolButton>
+              <div className="w-px h-5 bg-current opacity-20 mx-0.5" />
+            </>
+          )}
           {isCanvasMode && (
             <ToolButton
+              small={short}
               themeClasses={themeClasses}
               onClick={toggleSelectMode}
               active={isSelectMode}
@@ -711,6 +770,7 @@ export default function ContentPanel({
           )}
           {isCanvasMode && !isFocusMode && (
             <ToolButton
+              small={short}
               themeClasses={themeClasses}
               onClick={() => {
                 setIsDrawMode((v) => !v);
@@ -724,6 +784,7 @@ export default function ContentPanel({
           )}
           {isCanvasMode && !isFocusMode && (
             <ToolButton
+              small={short}
               themeClasses={themeClasses}
               onClick={handleExport}
               disabled={isExporting}
@@ -732,8 +793,25 @@ export default function ContentPanel({
               {isExporting ? '…' : '⬇️'}
             </ToolButton>
           )}
+          {short && !isFocusMode && (
+            <ToolButton
+              small
+              themeClasses={themeClasses}
+              onClick={() => setNotesOverlayOpen((v) => !v)}
+              active={notesOverlayOpen}
+              title="Notes for this page"
+            >
+              <span className="relative">
+                📝
+                {noteValue.trim() && (
+                  <span className="absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                )}
+              </span>
+            </ToolButton>
+          )}
           {!isFocusMode && (
             <ToolButton
+              small={short}
               themeClasses={themeClasses}
               onClick={() => setIsAskAIOpen((v) => !v)}
               active={isAskAIOpen}
@@ -743,6 +821,7 @@ export default function ContentPanel({
             </ToolButton>
           )}
           <ToolButton
+            small={short}
             themeClasses={themeClasses}
             onClick={toggleFocusMode}
             title={isFocusMode ? 'Exit fullscreen' : 'Fullscreen reading mode'}
@@ -752,12 +831,12 @@ export default function ContentPanel({
         </div>
       </div>
 
-      {/* Notes -- collapsible, hidden in focus mode */}
-      {!isFocusMode && (
+      {/* Notes -- collapsible row; on a short screen they are an overlay instead */}
+      {!isFocusMode && !short && (
         <div className={`border-b ${themeClasses.border} ${themeClasses.sidebg} shrink-0`}>
           <button
             onClick={() => setNotesOpen((v) => !v)}
-            className={`w-full px-4 md:px-6 py-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider ${themeClasses.hover}`}
+            className={`w-full ${sidePadding} py-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider ${themeClasses.hover}`}
           >
             <span className="flex items-center gap-2">
               📝 Notes
@@ -768,7 +847,7 @@ export default function ContentPanel({
             <span className="opacity-50">{notesOpen ? '▾' : '▸'}</span>
           </button>
           {notesOpen && (
-            <div className="px-4 md:px-6 pb-3">
+            <div className={`${sidePadding} pb-3`}>
               <textarea
                 key={activeSection.id}
                 value={noteValue}
@@ -796,7 +875,7 @@ export default function ContentPanel({
             minScale={MIN_ZOOM}
             maxScale={MAX_ZOOM}
             limitToBounds={false}
-            centerOnInit
+            centerOnInit={!short}
             doubleClick={{ disabled: true }}
             panning={{
               disabled: isDrawMode || (isSelectMode && isCoarsePointer),
@@ -812,10 +891,12 @@ export default function ContentPanel({
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                justifyContent: 'center',
+                // On a short screen the page is taller than the view, so it
+                // starts at the top rather than being centered.
+                justifyContent: short ? 'flex-start' : 'center',
                 width: '100%',
                 minHeight: '100%',
-                padding: isFocusMode ? '0' : '1rem',
+                padding: isFocusMode ? '0' : short ? '0.5rem' : '1rem',
               }}
             >
               <div className={`w-full ${isFocusMode ? 'flex flex-col items-center' : 'max-w-5xl'}`}>
@@ -827,6 +908,8 @@ export default function ContentPanel({
                     theme={theme}
                     focusMode={isFocusMode}
                     selectMode={isSelectMode}
+                    short={short}
+                    horizontalPadding={isFocusMode ? 0 : short ? 16 : 32}
                     containerWidth={contentWidth}
                     containerHeight={contentHeight}
                     onGeometryReady={(geom) =>
@@ -874,12 +957,40 @@ export default function ContentPanel({
           </div>
         )}
 
+        {/* Notes overlay -- short screens only, so it never pushes the page */}
+        {short && notesOverlayOpen && !isFocusMode && (
+          <div
+            className={`absolute top-2 right-2 z-30 w-[min(22rem,75%)] rounded-xl border ${themeClasses.border} ${themeClasses.sidebg} shadow-xl p-2`}
+          >
+            <div className="flex items-center justify-between mb-1 px-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wider opacity-60">📝 Notes</span>
+              <button
+                onClick={() => setNotesOverlayOpen(false)}
+                className={`w-6 h-6 rounded text-xs ${themeClasses.hover}`}
+                title="Close notes"
+              >
+                ✕
+              </button>
+            </div>
+            <textarea
+              key={activeSection.id}
+              value={noteValue}
+              onChange={(e) => onNoteChange(e.target.value)}
+              placeholder="Jot down thoughts on this page…"
+              rows={4}
+              className={`w-full px-3 py-2 rounded-lg text-sm resize-none ${themeClasses.bg} border ${themeClasses.border} focus:outline-none focus:ring-2 focus:ring-indigo-500/40`}
+            />
+          </div>
+        )}
+
         {/* Copy pill -- appears whenever text is selected in select mode */}
         {isSelectMode && selectedText && (
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={handleCopySelection}
-            className={`absolute bottom-28 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full text-sm font-semibold shadow-xl ${themeClasses.button}`}
+            className={`absolute ${
+              short ? 'bottom-14' : 'bottom-28'
+            } left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full text-sm font-semibold shadow-xl ${themeClasses.button}`}
           >
             {copied ? '✓ Copied' : `Copy ${selectedText.length} characters`}
           </button>
@@ -891,7 +1002,7 @@ export default function ContentPanel({
             style={
               toolbarPos
                 ? { position: 'absolute', left: toolbarPos.x, top: toolbarPos.y }
-                : { position: 'absolute', top: '1rem', left: '50%', transform: 'translateX(-50%)' }
+                : { position: 'absolute', top: short ? '0.5rem' : '1rem', left: '50%', transform: 'translateX(-50%)' }
             }
             className={`flex items-center gap-1 px-2 py-2 rounded-2xl border ${themeClasses.border} ${themeClasses.sidebg} shadow-xl z-20 flex-wrap justify-center max-w-[95%]`}
           >
@@ -1007,31 +1118,35 @@ export default function ContentPanel({
         </div>
       </div>
 
-      {/* Page navigation */}
-      <div
-        className={`px-3 py-2.5 md:px-6 md:py-3 border-t ${themeClasses.border} ${themeClasses.sidebg} shrink-0 flex items-center gap-2`}
-      >
-        <button
-          onClick={() => onNavigateSection('prev')}
-          disabled={!hasPrev}
-          className={navButtonClass(hasPrev)}
+      {/* Page navigation -- on a short screen it lives in the header instead */}
+      {!short && (
+        <div
+          className={`${
+            compact ? 'px-3 py-2.5' : 'px-6 py-3'
+          } border-t ${themeClasses.border} ${themeClasses.sidebg} shrink-0 flex items-center gap-2`}
         >
-          <span className="shrink-0">←</span>
-          <span className="truncate">{prevSectionTitle || 'Previous'}</span>
-        </button>
-        <button
-          onClick={() => onNavigateSection('next')}
-          disabled={!hasNext}
-          className={`${navButtonClass(hasNext)} justify-end`}
-        >
-          <span className="truncate">{nextSectionTitle || 'Next'}</span>
-          <span className="shrink-0">→</span>
-        </button>
-      </div>
+          <button
+            onClick={() => onNavigateSection('prev')}
+            disabled={!hasPrev}
+            className={navButtonClass(hasPrev)}
+          >
+            <span className="shrink-0">←</span>
+            <span className="truncate">{prevSectionTitle || 'Previous'}</span>
+          </button>
+          <button
+            onClick={() => onNavigateSection('next')}
+            disabled={!hasNext}
+            className={`${navButtonClass(hasNext)} justify-end`}
+          >
+            <span className="truncate">{nextSectionTitle || 'Next'}</span>
+            <span className="shrink-0">→</span>
+          </button>
+        </div>
+      )}
 
       {/* Footer stats -- text mode only */}
-      {!isCanvasMode && !isFocusMode && (
-        <div className={`px-4 md:px-6 py-2 border-t ${themeClasses.border} text-xs ${themeClasses.muted} shrink-0`}>
+      {!isCanvasMode && !isFocusMode && !short && (
+        <div className={`${sidePadding} py-2 border-t ${themeClasses.border} text-xs ${themeClasses.muted} shrink-0`}>
           {lines.length} lines · {highlightedLines.size} highlighted
         </div>
       )}

@@ -1,10 +1,12 @@
 'use client';
-import ImproveTopicsButton from '@/app/components/ImproveTopicsButton';
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme, getThemeClasses, THEME_OPTIONS } from '@/app/context/ThemeContext';
 import { extractPDFText, PDFSection, Topic } from '@/app/utils/pdfParser';
 import { useSoundEnabled } from '@/app/utils/sounds';
 import { getSetting, setSetting } from '@/app/utils/db';
+import { useLayoutMode } from '@/app/hooks/useLayoutMode';
+import ImproveTopicsButton from '@/app/components/ImproveTopicsButton';
 
 interface Section {
   id: string;
@@ -69,6 +71,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const { theme, setTheme } = useTheme();
   const themeClasses = getThemeClasses(theme);
+  const { compact, short } = useLayoutMode();
   const [soundOn, setSoundOn] = useSoundEnabled();
   const [uploadError, setUploadError] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
@@ -242,7 +245,7 @@ export default function Sidebar({
     }
   };
 
-  const renderPageRow = (section: Section, compact: boolean) => {
+  const renderPageRow = (section: Section, small: boolean) => {
     const isActive = activeSection === section.id;
     const isDone = progress.has(section.id);
     return (
@@ -251,7 +254,7 @@ export default function Sidebar({
         data-section-id={section.id}
         onClick={() => onSectionSelect(section.id)}
         className={`flex items-center gap-2.5 ${
-          compact ? 'px-2 py-1.5' : 'px-2.5 py-2'
+          small ? 'px-2 py-1.5' : 'px-2.5 py-2'
         } rounded-lg cursor-pointer transition ${isActive ? themeClasses.active : themeClasses.hover}`}
       >
         <button
@@ -344,14 +347,9 @@ export default function Sidebar({
   const done = progress.size;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
 
-  return (
-    <div
-      className={`w-full md:w-80 ${themeClasses.sidebg} ${themeClasses.sidetext} border-r ${themeClasses.border} ${
-        showOnMobile ? 'flex' : 'hidden'
-      } md:flex flex-col h-screen overflow-hidden`}
-    >
-      {/* Brand + actions */}
-      <div className="p-4 pb-3">
+  const brandAndActions = (
+    <div className={short ? 'p-3 pb-2' : 'p-4 pb-3'}>
+      {!short && (
         <div className="flex items-center gap-2.5 mb-4">
           <div
             className={`w-9 h-9 rounded-xl bg-gradient-to-br ${themeClasses.accent} flex items-center justify-center text-lg shadow-md`}
@@ -360,125 +358,159 @@ export default function Sidebar({
           </div>
           <span className="text-lg font-extrabold tracking-tight">ReadEx</span>
         </div>
+      )}
 
-        <div className="flex gap-2">
-          {onBackToLibrary && (
-            <button
-              onClick={onBackToLibrary}
-              className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border ${themeClasses.border} ${themeClasses.hover} transition`}
-            >
-              ← Library
-            </button>
-          )}
-          <label
-            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium text-center cursor-pointer transition ${
-              themeClasses.button
-            } ${isUploading ? 'opacity-60 pointer-events-none' : ''}`}
+      <div className="flex gap-2">
+        {onBackToLibrary && (
+          <button
+            onClick={onBackToLibrary}
+            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border ${themeClasses.border} ${themeClasses.hover} transition`}
           >
-            <input
-              type="file"
-              accept=".pdf"
-              className="hidden"
-              onChange={handleFileUpload}
-              disabled={isUploading}
-            />
-            {isUploading ? '⏳ Processing…' : '＋ Add PDF'}
-          </label>
-        </div>
-
-        {uploadError && (
-          <div className="mt-3 p-2.5 rounded-lg text-xs bg-red-500/10 text-red-600 border border-red-500/20">
-            ⚠️ {uploadError}
-          </div>
+            ← Library
+          </button>
         )}
-      </div>
-
-      {/* Reading progress */}
-      <div className="px-4 pb-3">
-        <div className="flex items-center justify-between text-xs mb-1.5">
-          <span className="font-semibold uppercase tracking-wider opacity-60">Progress</span>
-          <span className="opacity-60">
-            {done} / {total} · {pct}%
-          </span>
-        </div>
-        <div className="h-1.5 rounded-full bg-current/10 overflow-hidden">
-          <div
-            className={`h-full rounded-full bg-gradient-to-r ${themeClasses.accent} transition-all duration-500`}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      </div>
-
-      <div className={`border-t ${themeClasses.border}`} />
-
-      {/* Pages / Topics switch */}
-      <div className="px-3 pt-3">
-        <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl border ${themeClasses.border}`}>
-          {(
-            [
-              { value: 'pages', label: 'Pages', icon: '📄' },
-              { value: 'topics', label: 'Topics', icon: '🗂️' },
-            ] as const
-          ).map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => changeMode(opt.value)}
-              className={`py-1.5 text-xs rounded-lg font-semibold transition ${
-                mode === opt.value ? `${themeClasses.active} shadow-sm` : themeClasses.hover
-              }`}
-            >
-              <span className="mr-1">{opt.icon}</span>
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        {mode === 'topics' && topicsStatus === 'loading' && (
-          <p className="text-[11px] opacity-60 mt-2 px-1">Detecting topics…</p>
-        )}
-        {mode === 'topics' && topicsStatus === 'none' && (
-          <p className="text-[11px] opacity-60 mt-2 px-1">
-            No topics found in this document — showing pages.
-          </p>
-        )}
-                {mode === 'topics' && topicsStatus !== 'loading' && onImproveTopics && (
-          <ImproveTopicsButton onImprove={onImproveTopics} />
-        )}
-      </div>
-
-      {/* List */}
-      <div ref={listRef} className="flex-1 overflow-y-auto p-3">
-        {modeLoaded &&
-          (showTopics ? (
-            <div>{topicTree.map((view) => renderTopic(view))}</div>
-          ) : (
-            <div className="space-y-0.5">{sections.map((section) => renderPageRow(section, false))}</div>
-          ))}
-      </div>
-
-      {/* Theme + sound */}
-      <div className={`p-3 border-t ${themeClasses.border}`}>
-        <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl border ${themeClasses.border}`}>
-          {THEME_OPTIONS.map((opt) => (
-            <button
-              key={opt.name}
-              onClick={() => setTheme(opt.name)}
-              className={`py-1.5 text-xs rounded-lg font-semibold transition ${
-                theme === opt.name ? `${themeClasses.active} shadow-sm` : themeClasses.hover
-              }`}
-            >
-              <span className="mr-1">{opt.icon}</span>
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={() => setSoundOn(!soundOn)}
-          className={`mt-2 w-full py-1.5 text-xs rounded-lg font-semibold border ${themeClasses.border} ${themeClasses.hover} transition`}
-          title="Turn click and page-turn sounds on or off"
+        <label
+          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium text-center cursor-pointer transition ${
+            themeClasses.button
+          } ${isUploading ? 'opacity-60 pointer-events-none' : ''}`}
         >
-          {soundOn ? '🔊 Sounds on' : '🔇 Sounds off'}
-        </button>
+          <input
+            type="file"
+            accept=".pdf"
+            className="hidden"
+            onChange={handleFileUpload}
+            disabled={isUploading}
+          />
+          {isUploading ? '⏳ Processing…' : '＋ Add PDF'}
+        </label>
       </div>
+
+      {uploadError && (
+        <div className="mt-3 p-2.5 rounded-lg text-xs bg-red-500/10 text-red-600 border border-red-500/20">
+          ⚠️ {uploadError}
+        </div>
+      )}
+    </div>
+  );
+
+  const progressBlock = (
+    <div className="px-4 pb-3">
+      <div className="flex items-center justify-between text-xs mb-1.5">
+        <span className="font-semibold uppercase tracking-wider opacity-60">Progress</span>
+        <span className="opacity-60">
+          {done} / {total} · {pct}%
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-current/10 overflow-hidden">
+        <div
+          className={`h-full rounded-full bg-gradient-to-r ${themeClasses.accent} transition-all duration-500`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+
+  const modeSwitch = (
+    <div className="px-3 pt-3">
+      <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl border ${themeClasses.border}`}>
+        {(
+          [
+            { value: 'pages', label: 'Pages', icon: '📄' },
+            { value: 'topics', label: 'Topics', icon: '🗂️' },
+          ] as const
+        ).map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => changeMode(opt.value)}
+            className={`py-1.5 text-xs rounded-lg font-semibold transition ${
+              mode === opt.value ? `${themeClasses.active} shadow-sm` : themeClasses.hover
+            }`}
+          >
+            <span className="mr-1">{opt.icon}</span>
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      {mode === 'topics' && topicsStatus === 'loading' && (
+        <p className="text-[11px] opacity-60 mt-2 px-1">Detecting topics…</p>
+      )}
+      {mode === 'topics' && topicsStatus === 'none' && (
+        <p className="text-[11px] opacity-60 mt-2 px-1">
+          No topics found in this document — showing pages.
+        </p>
+      )}
+      {mode === 'topics' && topicsStatus !== 'loading' && onImproveTopics && (
+        <ImproveTopicsButton onImprove={onImproveTopics} />
+      )}
+    </div>
+  );
+
+  const listBlock = (
+    <div ref={listRef} className="flex-1 min-w-0 overflow-y-auto p-3">
+      {modeLoaded &&
+        (showTopics ? (
+          <div>{topicTree.map((view) => renderTopic(view))}</div>
+        ) : (
+          <div className="space-y-0.5">{sections.map((section) => renderPageRow(section, false))}</div>
+        ))}
+    </div>
+  );
+
+  const footerBlock = (
+    <div className={`p-3 border-t ${themeClasses.border}`}>
+      <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl border ${themeClasses.border}`}>
+        {THEME_OPTIONS.map((opt) => (
+          <button
+            key={opt.name}
+            onClick={() => setTheme(opt.name)}
+            className={`py-1.5 text-xs rounded-lg font-semibold transition ${
+              theme === opt.name ? `${themeClasses.active} shadow-sm` : themeClasses.hover
+            }`}
+          >
+            <span className="mr-1">{opt.icon}</span>
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      <button
+        onClick={() => setSoundOn(!soundOn)}
+        className={`mt-2 w-full py-1.5 text-xs rounded-lg font-semibold border ${themeClasses.border} ${themeClasses.hover} transition`}
+        title="Turn click and page-turn sounds on or off"
+      >
+        {soundOn ? '🔊 Sounds on' : '🔇 Sounds off'}
+      </button>
+    </div>
+  );
+
+  const rootClass = `${compact ? 'w-full' : 'w-80 shrink-0'} ${themeClasses.sidebg} ${themeClasses.sidetext} border-r ${
+    themeClasses.border
+  } ${compact && !showOnMobile ? 'hidden' : 'flex'} ${short ? 'flex-row' : 'flex-col'} h-dvh overflow-hidden`;
+
+  // A phone held sideways has plenty of width but very little height, so the
+  // controls and the page list go side by side instead of stacked.
+  if (short) {
+    return (
+      <div className={rootClass}>
+        <div className={`w-72 shrink-0 overflow-y-auto border-r ${themeClasses.border} flex flex-col`}>
+          {brandAndActions}
+          {progressBlock}
+          <div className={`border-t ${themeClasses.border}`} />
+          {modeSwitch}
+          <div className="mt-3">{footerBlock}</div>
+        </div>
+        {listBlock}
+      </div>
+    );
+  }
+
+  return (
+    <div className={rootClass}>
+      {brandAndActions}
+      {progressBlock}
+      <div className={`border-t ${themeClasses.border}`} />
+      {modeSwitch}
+      {listBlock}
+      {footerBlock}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { playPageTurn } from '@/app/utils/sounds';
 import { generateTopicsWithAI } from '@/app/utils/aiTopics';
 import { useEffect, useRef, useState } from 'react';
 import { ThemeProvider, useTheme, getThemeClasses } from '@/app/context/ThemeContext';
+import { useLayoutMode } from '@/app/hooks/useLayoutMode';
 import Sidebar from '@/app/components/Sidebar';
 import ContentPanel from '@/app/components/ContentPanel';
 import Library from '@/app/components/Library';
@@ -33,7 +34,7 @@ interface AppSection {
 function HomeContent() {
   const { theme } = useTheme();
   const themeClasses = getThemeClasses(theme);
-
+  const { compact } = useLayoutMode();
   const [view, setView] = useState<'library' | 'reader'>('library');
   const [isProcessing, setIsProcessing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -311,7 +312,7 @@ function HomeContent() {
   };
 
   return (
-    <main className={`w-full h-screen ${themeClasses.bg}`}>
+    <main className={`w-full h-dvh ${themeClasses.bg}`}>
       {view === 'library' ? (
         <Library
           onOpenBook={handleOpenSavedBook}
@@ -321,7 +322,7 @@ function HomeContent() {
           refreshKey={refreshKey}
         />
       ) : (
-        <div className="flex flex-col md:flex-row w-full h-screen">
+        <div className={`flex ${compact ? 'flex-col' : 'flex-row'} w-full h-dvh`}>
            <Sidebar
             key={activeBookId ?? 'none'}
             sections={allSections}

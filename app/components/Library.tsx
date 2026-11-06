@@ -203,7 +203,7 @@ export default function Library({
   const toolButtonClass = `text-xs font-medium px-3 py-2 rounded-lg border ${themeClasses.border} ${themeClasses.card} ${themeClasses.hover} transition disabled:opacity-50`;
 
   return (
-    <div className={`relative w-full h-screen ${themeClasses.hero} ${themeClasses.text} flex flex-col overflow-y-auto`}>
+    <div className={`relative w-full h-dvh ${themeClasses.hero} ${themeClasses.text} flex flex-col overflow-y-auto`}>
       {/* Anime theme: drifting sakura petals behind the content */}
       {theme === 'anime' && (
         <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden z-0">
